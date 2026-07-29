@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Test coverage
+coverage/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Chrome extension packaging output
+*.crx
+*.pem
+*.zip
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Claude Code local settings (machine-specific, not shared)
+.claude/settings.local.json
+.claude/commands/
+.claude/skills/
+.codex/
+.opencode/
+.kiro/
+openspec/
+# Project exclude paths
+/tests/unit.test.js

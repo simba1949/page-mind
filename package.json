@@ -1,0 +1,35 @@
+{
+  "name": "ai-browser-assistant",
+  "version": "0.1.0",
+  "description": "AI-powered browser assistant with side panel interface",
+  "scripts": {
+    "dev": "tsc --watch",
+    "build": "npm run clean && tsc -p tsconfig.build.json && npm run copy:assets",
+    "copy:assets": "node copy-assets.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "tsc --noEmit",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/jest": "^30.0.0",
+    "jest": "^30.4.2",
+    "rimraf": "^6.1.3",
+    "ts-jest": "^29.4.12",
+    "typescript": "^5.4.5"
+  },
+  "keywords": [
+    "browser-extension",
+    "ai",
+    "chatgpt",
+    "claude",
+    "side-panel"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "sharp": "^0.35.3"
+  }
+}

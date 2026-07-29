@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/background/service-worker.ts",
+    "src/sidepanel/sidepanel.ts"
+  ]
+}

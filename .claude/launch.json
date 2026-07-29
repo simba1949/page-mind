@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sidepanel",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["http-server", "dist/sidepanel", "-p", "8080"],
+      "port": 8080,
+      "url": "http://localhost:8080/"
+    }
+  ]
+}

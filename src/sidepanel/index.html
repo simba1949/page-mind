@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>页知 · PageMind</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <button id="clear-btn" class="icon-btn new-chat-btn" title="新建对话" aria-label="新建对话">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+        </button>
+      </div>
+      <div class="header-right">
+        <select id="model-select" class="model-select" title="选择模型" aria-label="选择模型">
+          <option value="">选择模型</option>
+        </select>
+        <button id="language-toggle" class="icon-btn" title="中 / EN" aria-label="切换语言">
+          <span id="lang-text">中</span>
+        </button>
+        <button id="settings-btn" class="icon-btn" title="设置" aria-label="设置">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+        <button id="theme-toggle" class="icon-btn" title="切换主题" aria-label="切换主题">
+          <svg class="theme-icon theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+          <svg class="theme-icon theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Chat Area -->
+    <main class="chat-container">
+      <div id="chat-messages" class="chat-messages" aria-live="polite">
+        <!-- Welcome Message -->
+        <div class="welcome-message">
+          <div class="welcome-content">
+            <div class="welcome-icon"><img src="../assets/icons/icon128.png" alt=""></div>
+            <h2 id="welcome-title">读懂页面，从这里开始</h2>
+            <p id="welcome-subtitle">询问当前页面，或选中文字后交给页知</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-container">
+        <!-- Quick Actions -->
+        <div class="quick-actions">
+          <button type="button" class="quick-action" data-action="summarize">
+            <span class="quick-action-icon">▤</span>
+            <span class="quick-action-label" id="quick-summarize">总结</span>
+          </button>
+          <button type="button" class="quick-action" data-action="explain">
+            <span class="quick-action-icon">◎</span>
+            <span class="quick-action-label" id="quick-explain">解释</span>
+          </button>
+          <button type="button" class="quick-action" data-action="translate">
+            <span class="quick-action-icon">文</span>
+            <span class="quick-action-label" id="quick-translate">翻译</span>
+          </button>
+        </div>
+
+        <!-- Preview Bar (Selection or Page) -->
+        <div id="preview-bar" class="preview-bar page hidden">
+          <div class="preview-content">
+            <span id="preview-icon" class="preview-icon">📄</span>
+            <span id="preview-label" class="preview-label">{context.label}</span>
+            <span id="preview-text" class="preview-text"></span>
+          </div>
+          <button id="preview-close" class="preview-close" title="不发送页面内容" aria-label="不发送页面内容">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="input-wrapper">
+          <textarea
+            id="message-input"
+            placeholder="输入你的问题..."
+            rows="1"
+            maxlength="4000"
+            aria-label="消息"
+          ></textarea>
+          <button id="send-btn" class="send-btn" disabled aria-label="发送消息">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22,2 15,22 11,13 2,9"/>
+            </svg>
+          </button>
+        </div>
+        <div class="composer-meta">
+          <span id="composer-help">Enter 发送 · Shift + Enter 换行</span>
+          <span id="character-count" class="character-count">最多 4000 字</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="settings-content">
+        <div class="settings-header">
+          <h2 id="settings-title">设置</h2>
+          <button id="close-settings" class="close-btn" aria-label="关闭设置">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="settings-body">
+          <div class="setting-group">
+            <label id="label-api-provider">API 格式</label>
+            <select id="api-provider">
+              <option value="openai">{provider.openai}</option>
+              <option value="anthropic">{provider.anthropic}</option>
+            </select>
+          </div>
+
+          <div class="setting-group">
+            <label id="label-base-url">API 端点</label>
+            <input
+              type="url"
+              id="base-url"
+              placeholder="https://api.openai.com/v1"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <small id="help-base-url" class="help-text">自定义 API 服务端点</small>
+          </div>
+
+          <div class="setting-group">
+            <label id="label-api-key">API 密钥</label>
+            <input
+              type="password"
+              id="api-key"
+              placeholder="输入你的 API 密钥"
+              autocomplete="new-password"
+              spellcheck="false"
+            >
+          </div>
+
+          <div class="setting-group checkbox-group">
+            <label class="checkbox-label" for="remember-api-key">
+              <input type="checkbox" id="remember-api-key">
+              <span id="label-remember-key">在此设备记住密钥</span>
+              <span class="key-storage-tip" title="密钥将保存在此 Chrome 用户配置中，
+仅本插件可访问。
+取消勾选后关闭浏览器会自动清理。">?</span>
+            </label>
+          </div>
+          <div class="setting-group">
+            <button id="test-connection" type="button" class="test-btn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                <polyline points="22,4 12,14.01 9,11.01"/>
+              </svg>
+              <span id="test-text">测试连接</span>
+            </button>
+            <div id="test-result" class="test-result hidden"></div>
+          </div>
+
+          <div class="setting-actions">
+            <button id="save-settings" class="primary-btn">
+              <span id="save-text">保存设置</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="overlay hidden">
+      <div class="loading-content">
+        <div class="loading-spinner"></div>
+        <span id="loading-text">思考中...</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
