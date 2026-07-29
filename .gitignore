@@ -46,3 +46,4 @@ Thumbs.db
 openspec/
 # Project exclude paths
 /tests/unit.test.js
+.codegraph/
