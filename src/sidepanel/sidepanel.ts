@@ -10,6 +10,9 @@ interface ChatMessage {
   content: string;
   timestamp: number;
   context?: PageContext;
+  // A previous AI reply the user quoted for this message; sent alongside
+  // the question, kept out of the composer.
+  quote?: string;
   reasoning?: string;
 }
 
@@ -263,7 +266,7 @@ function normalizeBaseUrl(value: string): string {
  * Parse a user-entered custom model list (comma or newline separated) into
  * normalized model IDs. Empty entries and duplicates are dropped.
  */
-function parseCustomModels(value: string): string[] {
+export function parseCustomModels(value: string): string[] {
   const seen = new Set<string>();
   for (const part of value.split(/[\n,]+/)) {
     const model = part.trim();
@@ -272,6 +275,340 @@ function parseCustomModels(value: string): string[] {
     }
   }
   return [...seen].slice(0, 100);
+}
+
+/**
+ * Minimal dependency-free Markdown renderer for assistant messages.
+ *
+ * Composed of the single-purpose helpers below: escape -> extract fenced
+ * blocks -> dispatch line blocks -> join. The entire input is HTML-escaped
+ * BEFORE any markdown transformation, so model output can never inject raw
+ * markup — the result is safe for innerHTML (MV3 CSP forbids inline
+ * scripts, and none can survive the escape). Supports fenced code blocks,
+ * headings, lists (one nesting level), blockquotes, tables, horizontal
+ * rules, bold, italic, strikethrough, inline code and links (http/https).
+ */
+
+/** A rendered block plus the index of the first line it did not consume. */
+interface MdBlock {
+  html: string;
+  next: number;
+}
+
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Wrap one fenced block's html with its language label and copy button. */
+function mdFenceToHtml(lang: string, code: string): string {
+  const label = lang.trim()
+    ? `<span class="md-lang">${lang.trim()}</span>`
+    : '';
+  return `<div class="md-pre-wrap">` +
+    `<button type="button" class="md-code-copy" title="${I18nService.t('btn.copyCode')}">${COPY_ICON_SVG}</button>` +
+    `<pre class="md-pre">${label}<code>${code.replace(/\n$/, '')}</code></pre></div>`;
+}
+
+/**
+ * Replace fenced blocks with \u0001 placeholders so their content is
+ * untouched by block/inline parsing. Input must already be HTML-escaped.
+ */
+function mdExtractFences(escapedSource: string): { text: string; fences: string[] } {
+  const fences: string[] = [];
+  const text = escapedSource.replace(/```([^\n`]*)\n?([\s\S]*?)```/g,
+    (_match, lang: string, code: string) => {
+      fences.push(mdFenceToHtml(lang, code));
+      return `\u0001${fences.length - 1}\u0001`;
+    });
+  return { text, fences };
+}
+
+/** Restore the fenced block a placeholder line stands for. */
+function mdRestoreFence(line: string, fences: string[]): string {
+  const match = line.trim().match(/^\u0001(\d+)\u0001$/);
+  return match ? fences[Number(match[1])] : '';
+}
+
+/**
+ * Inline markdown on escaped text: code spans, links, bold, italic,
+ * strikethrough. Code spans are masked with \u0000 so the emphasis rules
+ * can't touch their content.
+ */
+function mdInline(text: string, fences: string[]): string {
+  const codes: string[] = [];
+  let out = text.replace(/`([^`\n]+)`/g, (_m, code: string) => {
+    codes.push(`<code class="md-code">${code}</code>`);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+  out = out.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+  out = out.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => codes[Number(index)]);
+  out = out.replace(/\u0001(\d+)\u0001/g, (_m, index: string) => fences[Number(index)]);
+  return out;
+}
+
+// ---- Line classifiers, one shape each ----
+
+function mdIsHeading(line: string): boolean {
+  return /^#{1,6}\s/.test(line.trim());
+}
+
+function mdIsUnorderedItem(line: string): boolean {
+  return /^\s*[-*+]\s+\S/.test(line);
+}
+
+function mdIsOrderedItem(line: string): boolean {
+  return /^\s*\d+[.)]\s+\S/.test(line);
+}
+
+function mdIsListItem(line: string): boolean {
+  return mdIsUnorderedItem(line) || mdIsOrderedItem(line);
+}
+
+function mdIsDivider(line: string): boolean {
+  return /^\s*([-*_])\s*(?:\1\s*){2,}$/.test(line);
+}
+
+function mdIsQuote(line: string): boolean {
+  return /^\s*&gt;\s?/.test(line);
+}
+
+function mdIsTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+function mdIsTableSeparator(line: string): boolean {
+  return /^\s*\|[\s:|-]+\|\s*$/.test(line);
+}
+
+function mdIsFencePlaceholder(line: string): boolean {
+  return /^\u0001\d+\u0001$/.test(line.trim());
+}
+
+/** True when a line must not be gathered into a paragraph. */
+function mdStartsBlock(line: string): boolean {
+  return !line.trim() || mdIsHeading(line) || mdIsListItem(line) ||
+    mdIsDivider(line) || mdIsQuote(line) || mdIsTableRow(line) ||
+    mdIsFencePlaceholder(line);
+}
+
+// ---- Block renderers: consume lines starting at i, or return null ----
+
+function mdHeadingBlock(lines: string[], i: number, fences: string[]): MdBlock | null {
+  const match = lines[i].match(/^(#{1,6})\s+(.+)$/);
+  if (!match) return null;
+  const level = match[1].length;
+  return {
+    html: `<h${level} class="md-h">${mdInline(match[2].trim(), fences)}</h${level}>`,
+    next: i + 1
+  };
+}
+
+function mdDividerBlock(lines: string[], i: number): MdBlock | null {
+  return mdIsDivider(lines[i]) ? { html: '<hr class="md-hr">', next: i + 1 } : null;
+}
+
+/** Blockquote: consecutive ">" lines, inline-formatted. */
+function mdQuoteBlock(lines: string[], i: number, fences: string[]): MdBlock | null {
+  if (!mdIsQuote(lines[i])) return null;
+  const quoted: string[] = [];
+  let next = i;
+  while (next < lines.length && mdIsQuote(lines[next])) {
+    quoted.push(lines[next].replace(/^\s*&gt;\s?/, ''));
+    next++;
+  }
+  return {
+    html: `<blockquote class="md-quote">${quoted.map(l => mdInline(l, fences)).join('<br>')}</blockquote>`,
+    next
+  };
+}
+
+/** Split "| a | b |" into trimmed cells. */
+function mdParseTableRow(row: string): string[] {
+  return row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+}
+
+/** Table: header row + |---| separator row + body rows, with copy button. */
+function mdTableBlock(lines: string[], i: number, fences: string[]): MdBlock | null {
+  if (!mdIsTableRow(lines[i]) || !mdIsTableSeparator(lines[i + 1] || '')) return null;
+  const header = mdParseTableRow(lines[i]);
+  let next = i + 2;
+  const rows: string[][] = [];
+  while (next < lines.length && mdIsTableRow(lines[next])) {
+    rows.push(mdParseTableRow(lines[next]));
+    next++;
+  }
+  const head = `<thead><tr>${header.map(cell => `<th>${mdInline(cell, fences)}</th>`).join('')}</tr></thead>`;
+  const body = `<tbody>${rows.map(row =>
+    `<tr>${row.map(cell => `<td>${mdInline(cell, fences)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  return {
+    html: `<div class="md-table-wrap">` +
+      `<button type="button" class="md-table-copy" title="${I18nService.t('btn.copyTable')}">${COPY_ICON_SVG}</button>` +
+      `<table class="md-table">${head}${body}</table></div>`,
+    next
+  };
+}
+
+/** One list entry: main text plus continuation lines indented 2+ spaces. */
+interface MdListItem {
+  text: string;
+  children: string[];
+}
+
+/** Gather list items; indented lines continue the previous item. */
+function mdListItems(lines: string[], start: number, itemRe: RegExp): { items: MdListItem[]; next: number } {
+  const items: MdListItem[] = [];
+  let i = start;
+  while (i < lines.length) {
+    const match = lines[i].match(itemRe);
+    if (match) {
+      items.push({ text: match[2], children: [] });
+      i++;
+    } else if (items.length > 0 && /^\s{2,}\S/.test(lines[i]) && !mdIsFencePlaceholder(lines[i])) {
+      items[items.length - 1].children.push(lines[i].trim());
+      i++;
+    } else {
+      break;
+    }
+  }
+  return { items, next: i };
+}
+
+/** List (ordered or unordered). */
+function mdListBlock(lines: string[], i: number, fences: string[]): MdBlock | null {
+  if (!mdIsListItem(lines[i])) return null;
+  const ordered = mdIsOrderedItem(lines[i]);
+  const itemRe = ordered ? /^(\s*)\d+[.)]\s+(.*)$/ : /^(\s*)[-*+]\s+(.*)$/;
+  const { items, next } = mdListItems(lines, i, itemRe);
+  const html = items.map(item =>
+    `<li>${mdInline(item.text, fences)}${item.children.length
+      ? '<br>' + item.children.map(l => mdInline(l, fences)).join('<br>')
+      : ''}</li>`).join('');
+  return {
+    html: ordered ? `<ol class="md-list">${html}</ol>` : `<ul class="md-list">${html}</ul>`,
+    next
+  };
+}
+
+/**
+ * Paragraph: consecutive non-block lines. Always consumes at least the
+ * current line — a block-shaped line no earlier renderer took (e.g. a
+ * table row whose separator hasn't streamed in yet) becomes a single-line
+ * paragraph. Without that guarantee the dispatch loop would spin on the
+ * same line forever and hang the page.
+ */
+function mdParagraphBlock(lines: string[], i: number, fences: string[]): MdBlock {
+  const paragraph: string[] = [];
+  let next = i;
+  while (next < lines.length && !mdStartsBlock(lines[next])) {
+    paragraph.push(lines[next]);
+    next++;
+  }
+  if (paragraph.length === 0) {
+    paragraph.push(lines[i]);
+    next = i + 1;
+  }
+  return {
+    html: `<p class="md-p">${paragraph.map(l => mdInline(l, fences)).join('<br>')}</p>`,
+    next
+  };
+}
+
+/** Render markdown source to HTML (see the block comment above). */
+export function renderMarkdown(source: string): string {
+  const { text, fences } = mdExtractFences(escapeHtml(source));
+  const lines = text.split('\n');
+  const blocks: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i++; continue; }
+    if (mdIsFencePlaceholder(lines[i])) {
+      blocks.push(mdRestoreFence(lines[i], fences));
+      i++;
+      continue;
+    }
+    const block = mdHeadingBlock(lines, i, fences)
+      ?? mdDividerBlock(lines, i)
+      ?? mdQuoteBlock(lines, i, fences)
+      ?? mdTableBlock(lines, i, fences)
+      ?? mdListBlock(lines, i, fences)
+      ?? mdParagraphBlock(lines, i, fences);
+    blocks.push(block.html);
+    i = block.next;
+  }
+
+  return blocks.join('\n');
+}
+
+const COPY_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const CHECK_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>';
+const QUOTE_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M10 8v6a4 4 0 0 1-4 4H5a1 1 0 0 1 0-2h1a2 2 0 0 0 2-2H5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1zm10 0v6a4 4 0 0 1-4 4h-1a1 1 0 0 1 0-2h1a2 2 0 0 0 2-2h-3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1z"/></svg>';
+
+// Flash-feedback timers per button, so rapid re-clicks don't stack reverts
+const copyFlashTimers = new WeakMap<HTMLElement, number>();
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Clipboard API can be unavailable (permission denied, older webview);
+    // fall back to the legacy hidden-textarea trick.
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    textarea.remove();
+  }
+}
+
+/** Serialize one rendered cell back to markdown inline syntax. */
+function tableCellToMarkdown(cell: HTMLElement): string {
+  // Node type literals (3 = text, 1 = element) instead of the Node global,
+  // so this stays callable in unit tests where `Node` doesn't exist.
+  const inline = (node: Node): string => {
+    if (node.nodeType === 3) return node.textContent || '';
+    if (node.nodeType !== 1) return '';
+    const el = node as HTMLElement;
+    const inner = Array.from(el.childNodes).map(inline).join('');
+    switch (el.tagName) {
+      case 'STRONG': return `**${inner}**`;
+      case 'EM': return `*${inner}*`;
+      case 'DEL': return `~~${inner}~~`;
+      case 'CODE': return `\`${inner}\``;
+      case 'A': return `[${inner}](${el.getAttribute('href') || ''})`;
+      case 'BR': return ' ';
+      default: return inner;
+    }
+  };
+  return inline(cell).trim().replace(/\|/g, '\\|');
+}
+
+/** Rebuild markdown source from a rendered table element. */
+export function tableToMarkdown(table: HTMLTableElement): string {
+  const rowToMd = (row: HTMLTableRowElement): string =>
+    `|${Array.from(row.cells).map(cell => ` ${tableCellToMarkdown(cell)} `).join('|')}|`;
+
+  const lines: string[] = [];
+  const head = table.tHead?.rows[0];
+  if (head) {
+    lines.push(rowToMd(head));
+    lines.push(`|${Array.from(head.cells).map(() => ' --- ').join('|')}|`);
+  }
+  Array.from(table.tBodies[0]?.rows || []).forEach(row => lines.push(rowToMd(row)));
+  return lines.join('\n');
 }
 
 async function ensureEndpointPermission(baseUrl: string, requestPermission: boolean): Promise<boolean> {
@@ -774,6 +1111,14 @@ const translations = {
     'msg.noEndpoint': 'Please enter the API endpoint',
     'msg.noEndpointPermission': 'Access to the API domain was not granted',
     'msg.noModels': 'No models available',
+    'btn.copy': 'Copy reply',
+    'btn.copied': 'Copied',
+    'btn.copyTable': 'Copy table (Markdown)',
+    'btn.copyCode': 'Copy code',
+    'btn.quote': 'Quote reply',
+    'btn.grantAccess': 'Grant site access',
+    'context.noAccess': 'Cannot read this page',
+    'context.quote': 'Quote',
     'msg.htmlResponse': 'The endpoint returned an HTML page instead of JSON. Check the API endpoint URL (e.g. a missing /v1 path, or a website address instead of the API).',
     'msg.invalidJson': 'The endpoint returned an invalid JSON response',
     'help.baseUrlV1Hint': 'Tip: OpenAI-compatible endpoints usually end with /v1 (e.g. https://api.openai.com/v1).',
@@ -842,6 +1187,14 @@ const translations = {
     'msg.noEndpoint': '请输入 API 端点',
     'msg.noEndpointPermission': '未授予该 API 域名的访问权限',
     'msg.noModels': '没有可用的模型',
+    'btn.copy': '复制回复',
+    'btn.copied': '已复制',
+    'btn.copyTable': '复制表格（Markdown）',
+    'btn.copyCode': '复制代码',
+    'btn.quote': '引用回复',
+    'btn.grantAccess': '授权读取网站',
+    'context.noAccess': '无法读取此页面',
+    'context.quote': '引用',
     'msg.htmlResponse': '端点返回的是网页而非 JSON。请检查 API 端点是否正确（例如缺少 /v1 路径，或填成了网站地址）',
     'msg.invalidJson': '端点返回了无效的 JSON 响应',
     'help.baseUrlV1Hint': '提示：OpenAI 兼容端点通常以 /v1 结尾（如 https://api.openai.com/v1）。',
@@ -884,6 +1237,8 @@ class SidePanelController {
   private apiService: APIService | null = null;
   private currentContext: PageContext | null = null;
   private contextDismissed = false;
+  // A quoted AI reply pending for the next outgoing message (one-shot)
+  private quotedReply: string | null = null;
   private isSending = false;
 
   // DOM Elements
@@ -904,6 +1259,8 @@ class SidePanelController {
   private previewLabel!: HTMLElement;
   private previewText!: HTMLElement;
   private previewCloseBtn!: HTMLButtonElement;
+  private quoteBar!: HTMLElement;
+  private quoteText!: HTMLElement;
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -941,7 +1298,9 @@ class SidePanelController {
    * Auto-fetch current page and show in preview bar
    */
   private async autoFetchCurrentPage(): Promise<void> {
+    // Suppressed while a quote is pending — the quote is the reference
     try {
+      if (this.quotedReply) return;
       // Try to get page content directly - permissions should already be granted
       const response = await chrome.runtime.sendMessage({
         type: 'GET_PAGE_CONTENT'
@@ -953,6 +1312,15 @@ class SidePanelController {
         this.contextDismissed = false;
         // Show page preview in the bar above input
         this.showPagePreviewBar(context.title);
+      } else {
+        // Nothing readable: either the tab isn't a web page, or site access
+        // isn't granted. Only the latter is fixable — offer it once.
+        const hasAccess = await chrome.permissions.contains({ origins: ['https://*/*'] });
+        if (hasAccess) {
+          this.previewBar.classList.add('hidden');
+        } else {
+          this.showPermissionBar();
+        }
       }
     } catch (error) {
       console.error('Failed to auto-fetch page content:', error);
@@ -969,7 +1337,64 @@ class SidePanelController {
     this.previewIcon.textContent = '📄';
     this.previewLabel.textContent = I18nService.t('context.fullPage');
     this.previewText.textContent = preview;
+    this.previewBar.querySelector('.preview-authorize')?.remove();
     this.previewBar.className = 'preview-bar page';
+  }
+
+  /**
+   * Prompt for site access after page capture failed without it. activeTab
+   * only covers the tab that was active when the extension icon was clicked;
+   * following tab switches needs the standing host permission, which only a
+   * user gesture can request — hence the button.
+   */
+  private showPermissionBar(): void {
+    this.previewIcon.textContent = '🔒';
+    this.previewLabel.textContent = I18nService.t('context.noAccess');
+    this.previewText.textContent = '';
+    this.previewBar.querySelector('.preview-authorize')?.remove();
+    const grantBtn = document.createElement('button');
+    grantBtn.type = 'button';
+    grantBtn.className = 'preview-authorize';
+    grantBtn.textContent = I18nService.t('btn.grantAccess');
+    grantBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const granted = await ensurePageAccessPermission(true);
+      if (granted) {
+        await this.autoFetchCurrentPage();
+      } else {
+        this.clearPreview();
+      }
+    });
+    this.previewBar.insertBefore(grantBtn, this.previewCloseBtn);
+    this.previewBar.className = 'preview-bar page';
+  }
+
+  /**
+   * Attach a previous AI reply as THE reference for the next question.
+   * While a quote is pending it replaces the page/selection reference
+   * entirely: the page bar hides, page capture is suppressed, and on send
+   * only the quote rides along. The composer stays clean.
+   */
+  private setQuote(content: string): void {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    // Cancel any in-flight page capture so it can't re-show the page bar
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    this.previewBar.classList.add('hidden');
+    this.quotedReply = trimmed;
+    this.quoteText.textContent = trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed;
+    this.quoteBar.classList.remove('hidden');
+    this.messageInput.focus();
+  }
+
+  /** Drop the pending quote and hide its bar. Callers decide whether to
+   *  restore the page reference afterwards. */
+  private clearQuote(): void {
+    this.quotedReply = null;
+    this.quoteBar.classList.add('hidden');
   }
 
   /**
@@ -1017,6 +1442,8 @@ class SidePanelController {
     this.previewLabel = document.getElementById('preview-label')!;
     this.previewText = document.getElementById('preview-text')!;
     this.previewCloseBtn = document.getElementById('preview-close') as HTMLButtonElement;
+    this.quoteBar = document.getElementById('quote-bar')!;
+    this.quoteText = document.getElementById('quote-text')!;
   }
 
   /**
@@ -1048,6 +1475,34 @@ class SidePanelController {
       }
     });
 
+    // Copy buttons inside rendered markdown (tables, code blocks). These
+    // are recreated on every streaming re-render, so listen via delegation
+    // on the container.
+    this.chatMessages.addEventListener('click', (event) => {
+      const target = event.target as HTMLElement;
+      const tableBtn = target.closest<HTMLButtonElement>('.md-table-copy');
+      if (tableBtn) {
+        const table = tableBtn.parentElement?.querySelector('table');
+        if (table) {
+          event.stopPropagation();
+          void copyTextToClipboard(tableToMarkdown(table));
+          this.flashCopyButton(tableBtn, I18nService.t('btn.copyTable'), I18nService.t('btn.copied'));
+        }
+        return;
+      }
+      const codeBtn = target.closest<HTMLButtonElement>('.md-code-copy');
+      if (codeBtn) {
+        const code = codeBtn.parentElement?.querySelector('pre code');
+        if (code) {
+          event.stopPropagation();
+          // textContent reverses the HTML escaping done at render time,
+          // so the clipboard receives the original source text
+          void copyTextToClipboard(code.textContent || '');
+          this.flashCopyButton(codeBtn, I18nService.t('btn.copyCode'), I18nService.t('btn.copied'));
+        }
+      }
+    });
+
     // Settings
     this.settingsBtn.addEventListener('click', () => this.openSettings());
     this.closeSettingsBtn.addEventListener('click', () => this.closeSettings());
@@ -1073,6 +1528,14 @@ class SidePanelController {
 
     // Preview bar close button
     this.previewCloseBtn.addEventListener('click', () => this.clearPreview());
+
+    // Quote bar close button — cancel the quote and bring the page
+    // reference back for the next question
+    (document.getElementById('quote-close') as HTMLButtonElement)
+      .addEventListener('click', () => {
+        this.clearQuote();
+        void this.autoFetchCurrentPage();
+      });
 
     // Quick action buttons
     const quickActions = document.querySelectorAll('.quick-action');
@@ -1120,6 +1583,12 @@ class SidePanelController {
         this.currentContext = null;
         this.contextDismissed = false;
         this.previewBar.className = 'preview-bar hidden';
+        // Instant feedback: when the event carries the new page's identity
+        // (visible once site access is granted), show it right away; full
+        // content is captured a moment later. Not while a quote is pending.
+        if (!this.quotedReply && (message.title || message.url)) {
+          this.showPagePreviewBar(message.title || message.url);
+        }
         this.refreshTimer = setTimeout(() => {
           this.refreshTimer = null;
           void this.autoFetchCurrentPage();
@@ -1144,6 +1613,9 @@ class SidePanelController {
   private handleContextFromMenu(contextData: any): void {
     const context = sanitizePageContext(contextData);
     if (!context) return;
+    // An explicitly selected text replaces a pending quote — only one
+    // reference can be active at a time
+    this.clearQuote();
     // Set as current context
     this.currentContext = context;
     this.contextDismissed = false;
@@ -1285,9 +1757,11 @@ class SidePanelController {
       return;
     }
 
-    // Determine context to use
-    if (!this.currentContext && !this.contextDismissed) {
-      await this.fetchCurrentPageContext();
+    // Determine the reference for this message. Exactly one applies:
+    // a pending quote replaces the page/selection reference entirely, so
+    // don't capture or attach page context alongside it.
+    if (!this.contextDismissed && !this.quotedReply) {
+      await this.refreshContextForActiveTab();
     }
 
     // Add user message
@@ -1296,15 +1770,67 @@ class SidePanelController {
       role: 'user',
       content,
       timestamp: Date.now(),
-      context: this.currentContext || undefined
+      context: this.quotedReply ? undefined : (this.currentContext || undefined),
+      quote: this.quotedReply || undefined
     };
 
     await this.addMessage(userMessage);
     this.messageInput.value = '';
     this.updateSendButton();
+    // The quote is one-shot: it applied to this message only. Bring the
+    // page reference back for the next question.
+    if (userMessage.quote) {
+      this.clearQuote();
+      void this.autoFetchCurrentPage();
+    }
 
     // Send to AI
     await this.sendToAI(userMessage);
+  }
+
+  /**
+   * Normalize a URL for context comparison: contexts are captured without
+   * query strings or fragments, so the live tab URL is stripped the same
+   * way before comparing.
+   */
+  private static urlForContextComparison(value: string): string {
+    try {
+      const url = new URL(value);
+      url.search = '';
+      url.hash = '';
+      return url.toString();
+    } catch {
+      return value;
+    }
+  }
+
+  /**
+   * Ensure `currentContext` still describes the tab the user is looking at.
+   * A stale context (captured on a page since left) is dropped, its preview
+   * bar hidden, and the current page re-fetched. Runs on every send — the
+   * probe is one cheap tabs.query, no scripting.
+   */
+  private async refreshContextForActiveTab(): Promise<void> {
+    let keepContext = false;
+    if (this.currentContext) {
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB' });
+        const tabUrl: string = response?.data?.url || '';
+        // An empty URL means the active tab isn't a normal web page
+        // (chrome://, new tab page) — the old context cannot apply there.
+        keepContext = Boolean(tabUrl) &&
+          SidePanelController.urlForContextComparison(this.currentContext.url) ===
+          SidePanelController.urlForContextComparison(tabUrl);
+      } catch {
+        // Background unreachable — don't trust the old association either.
+        keepContext = false;
+      }
+    }
+
+    if (keepContext) return;
+
+    this.currentContext = null;
+    await this.fetchCurrentPageContext();
   }
 
   /**
@@ -1345,6 +1871,12 @@ class SidePanelController {
         this.currentContext = pageContext;
         this.contextDismissed = false;
         this.showPagePreviewBar(pageContext.title);
+      }
+
+      if (!this.currentContext) {
+        // No readable page context — hide any lingering preview bar so the
+        // UI never claims a reference that won't actually be sent.
+        this.previewBar.classList.add('hidden');
       }
     } catch (error) {
       console.error('Failed to auto-fetch page content:', error);
@@ -1395,14 +1927,14 @@ class SidePanelController {
             contentEl.replaceChildren();
           }
           assistantMessage.content += delta;
-          contentEl.textContent = assistantMessage.content;
+          contentEl.innerHTML = renderMarkdown(assistantMessage.content);
           this.scrollToBottom();
         }
       });
 
       // Reconcile with the final aggregated result
       assistantMessage.content = response.content || assistantMessage.content;
-      contentEl.textContent = assistantMessage.content;
+      contentEl.innerHTML = renderMarkdown(assistantMessage.content);
 
       this.messages.push(assistantMessage);
       await this.saveChatHistory();
@@ -1415,7 +1947,7 @@ class SidePanelController {
         messageEl.remove();
       } else {
         // Keep whatever was streamed before the connection dropped.
-        contentEl.textContent = assistantMessage.content;
+        contentEl.innerHTML = renderMarkdown(assistantMessage.content);
         this.messages.push(assistantMessage);
         await this.saveChatHistory();
       }
@@ -1453,11 +1985,15 @@ class SidePanelController {
       .slice(-10);
     messages.push(...recentMessages);
 
-    // Add current user message as user role only
+    // Add current user message as user role only. A pending quote is
+    // prepended as clearly delimited reference material, not mixed into
+    // the question itself.
     messages.push({
       id: this.generateId(),
       role: 'user',
-      content: userMessage.content,
+      content: userMessage.quote
+        ? `The user is quoting part of an earlier reply and asking about it.\n\n=== QUOTED REPLY ===\n${userMessage.quote}\n=== END OF QUOTE ===\n\n${userMessage.content}`
+        : userMessage.content,
       timestamp: Date.now()
     });
 
@@ -1544,6 +2080,29 @@ Instructions:
    * references to the parts that need live updates while a response streams
    * in.
    */
+  /**
+   * Briefly swap a copy button's icon to a checkmark to confirm the copy.
+   */
+  private flashCopyButton(button: HTMLButtonElement, originalTitle: string, copiedTitle: string): void {
+    const pending = copyFlashTimers.get(button);
+    if (pending !== undefined) {
+      window.clearTimeout(pending);
+    }
+    if (!button.dataset.originalIcon) {
+      button.dataset.originalIcon = button.innerHTML;
+    }
+    button.innerHTML = CHECK_ICON_SVG;
+    button.title = copiedTitle;
+    button.classList.add('copied');
+    const timer = window.setTimeout(() => {
+      button.innerHTML = button.dataset.originalIcon || '';
+      button.title = originalTitle;
+      button.classList.remove('copied');
+      copyFlashTimers.delete(button);
+    }, 1400);
+    copyFlashTimers.set(button, timer);
+  }
+
   private buildMessageElement(message: ChatMessage): {
     messageEl: HTMLElement;
     contentEl: HTMLElement;
@@ -1562,6 +2121,41 @@ Instructions:
       ? I18nService.t('role.user')
       : I18nService.t('role.assistant');
 
+    // Quote + copy actions (assistant only), in a row below the reply.
+    // They close over the message object, so during streaming they use the
+    // content accumulated so far, and the final full text once complete.
+    let actions: HTMLDivElement | null = null;
+    if (message.role === 'assistant') {
+      actions = document.createElement('div');
+      actions.className = 'msg-actions';
+      const quoteBtn = document.createElement('button');
+      quoteBtn.type = 'button';
+      quoteBtn.className = 'msg-quote-btn';
+      quoteBtn.title = I18nService.t('btn.quote');
+      quoteBtn.setAttribute('aria-label', I18nService.t('btn.quote'));
+      quoteBtn.innerHTML = QUOTE_ICON_SVG;
+      quoteBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        // Attach the reply as the quote for the next question — the
+        // composer stays clean; the quote rides along on send.
+        this.setQuote(message.content);
+      });
+      actions.appendChild(quoteBtn);
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'msg-copy-btn';
+      copyBtn.title = I18nService.t('btn.copy');
+      copyBtn.setAttribute('aria-label', I18nService.t('btn.copy'));
+      copyBtn.innerHTML = COPY_ICON_SVG;
+      copyBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        await copyTextToClipboard(message.content);
+        this.flashCopyButton(copyBtn, I18nService.t('btn.copy'), I18nService.t('btn.copied'));
+      });
+      actions.appendChild(copyBtn);
+    }
+
     bubble.appendChild(header);
 
     const placeholder = document.createElement('details');
@@ -1572,9 +2166,19 @@ Instructions:
 
     const content = document.createElement('div');
     content.className = 'message-content';
-    content.textContent = message.content;
+    if (message.role === 'assistant') {
+      content.classList.add('markdown-body');
+      content.innerHTML = renderMarkdown(message.content);
+    } else {
+      content.textContent = message.content;
+    }
 
     bubble.appendChild(content);
+
+    // Action row (quote + copy) sits below the reply, not in the header
+    if (actions) {
+      bubble.appendChild(actions);
+    }
 
     // Add context info if available
     if (message.context) {
@@ -1598,6 +2202,25 @@ Instructions:
       sourceEl.textContent = message.context.title;
       contextInfo.append(iconEl, labelEl, sourceEl);
       bubble.appendChild(contextInfo);
+    }
+
+    // Quote chip: this question references part of an earlier AI reply
+    if (message.quote) {
+      const quoteChip = document.createElement('div');
+      quoteChip.className = 'message-context quote-chip';
+      const qIcon = document.createElement('span');
+      qIcon.className = 'context-icon';
+      qIcon.textContent = '💬';
+      const qLabel = document.createElement('span');
+      qLabel.className = 'context-label';
+      qLabel.textContent = I18nService.t('context.quote');
+      const qSource = document.createElement('span');
+      qSource.className = 'context-source';
+      qSource.textContent = message.quote.length > 30
+        ? message.quote.slice(0, 30) + '…'
+        : message.quote;
+      quoteChip.append(qIcon, qLabel, qSource);
+      bubble.appendChild(quoteChip);
     }
 
     messageEl.appendChild(bubble);
@@ -1628,6 +2251,7 @@ Instructions:
     this.renderMessages();
     this.currentContext = null;
     this.contextDismissed = false;
+    this.clearQuote();
     this.messageInput.placeholder = I18nService.t('app.placeholder');
 
     // Show current page in preview bar
@@ -2089,6 +2713,7 @@ Instructions:
       'save-text': 'settings.save',
       'help-base-url': 'help.baseUrl',
       'base-url-hint': 'help.baseUrlV1Hint',
+      'quote-label': 'context.quote',
       'help-model': 'help.model',
       'fetch-text': 'btn.fetch',
       'privacy-status': 'status.localSession',
@@ -2241,7 +2866,11 @@ Instructions:
   }
 }
 
-// Initialize side panel when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-  new SidePanelController();
-});
+// Boot only inside the extension's side panel page. Unit tests import this
+// module for its pure helpers (no chrome APIs there), and static previews
+// of the page run without extension APIs altogether.
+if (typeof chrome !== 'undefined' && chrome.runtime?.id && typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    new SidePanelController();
+  });
+}

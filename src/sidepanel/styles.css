@@ -11,10 +11,12 @@
   --bg-surface-hover: #222D40;
   --bg-user-msg: #1E3A5F;
   --bg-ai-msg: #1A2332;
-  --user-msg-start: #2563eb;
-  --user-msg-end: #1d4ed8;
+  /* Soft blue tint over the dark background — same family as the muted
+     AI surface, instead of a saturated gradient that clashes with it */
+  --user-msg-start: rgba(74, 158, 255, 0.18);
+  --user-msg-end: rgba(74, 158, 255, 0.08);
   --user-msg-text: #ffffff;
-  --user-msg-border: rgba(59, 130, 246, 0.35);
+  --user-msg-border: rgba(74, 158, 255, 0.3);
 
   /* Accent Colors */
   --accent-warm: #E5A14A;
@@ -65,10 +67,12 @@
   --bg-surface-hover: #eef2f8;
   --bg-user-msg: #275c92;
   --bg-ai-msg: #ffffff;
-  --user-msg-start: #2563eb;
-  --user-msg-end: #1d4ed8;
-  --user-msg-text: #ffffff;
-  --user-msg-border: rgba(37, 99, 235, 0.22);
+  /* Soft blue tint (not the saturated gradient used in dark mode) so the
+     user bubble sits beside white AI bubbles as one family */
+  --user-msg-start: rgba(37, 99, 235, 0.13);
+  --user-msg-end: rgba(30, 79, 156, 0.08);
+  --user-msg-text: #1e4f9c;
+  --user-msg-border: rgba(37, 99, 235, 0.24);
   --accent-warm: #c9781d;
   --accent-warm-light: rgba(201, 120, 29, 0.1);
   --accent-blue: #2563a7;
@@ -372,19 +376,7 @@ body {
   border-radius: var(--radius-lg) var(--radius-lg) 4px var(--radius-lg);
   padding: var(--space-md) var(--space-lg);
   max-width: 82%;
-  box-shadow: 0 10px 28px rgba(19, 67, 112, 0.2);
-}
-
-.message.user .message-bubble::before {
-  content: '';
-  position: absolute;
-  top: -36px;
-  right: -28px;
-  width: 100px;
-  height: 100px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.07);
-  pointer-events: none;
+  box-shadow: var(--shadow-sm);
 }
 
 .message.user .message-content {
@@ -434,6 +426,206 @@ body {
 }
 
 /* ========================================
+   Rendered Markdown (assistant messages)
+   ======================================== */
+
+.message-content.markdown-body {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+
+.markdown-body .md-p {
+  margin: 0 0 8px;
+}
+
+.markdown-body .md-h {
+  margin: 14px 0 6px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.markdown-body h1.md-h { font-size: 18px; }
+.markdown-body h2.md-h { font-size: 16px; }
+.markdown-body h3.md-h { font-size: 14.5px; }
+.markdown-body h4.md-h,
+.markdown-body h5.md-h,
+.markdown-body h6.md-h { font-size: 14px; }
+
+.markdown-body .md-list {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.markdown-body .md-list li { margin: 2px 0; }
+
+.markdown-body .md-code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+}
+
+.markdown-body .md-pre {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.markdown-body .md-pre code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  white-space: pre;
+}
+
+.markdown-body .md-lang {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.markdown-body .md-quote {
+  margin: 0 0 8px;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent-blue);
+  background: var(--accent-blue-light);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-secondary);
+}
+
+.markdown-body a {
+  color: var(--accent-blue);
+}
+
+.markdown-body .md-table {
+  display: block;
+  max-width: 100%;
+  margin: 0 0 8px;
+  border-collapse: collapse;
+  font-size: 13px;
+  overflow-x: auto;
+}
+
+.markdown-body .md-table th,
+.markdown-body .md-table td {
+  padding: 5px 9px;
+  border: 1px solid var(--border-default);
+  text-align: left;
+}
+
+.markdown-body .md-table th {
+  background: var(--bg-surface-hover);
+  font-weight: 600;
+}
+
+.markdown-body hr.md-hr {
+  margin: 12px 0;
+  border: none;
+  border-top: 1px solid var(--border-default);
+}
+
+/* ========================================
+   Copy Controls
+   ======================================== */
+
+/* Per-reply quote + copy buttons, right-aligned below the reply */
+.msg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.msg-quote-btn,
+.msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.message:hover .msg-copy-btn,
+.message:hover .msg-quote-btn,
+.msg-copy-btn:focus-visible,
+.msg-quote-btn:focus-visible {
+  opacity: 1;
+}
+
+.msg-copy-btn:hover {
+  color: var(--accent-blue);
+  background: var(--bg-surface-hover);
+}
+
+.msg-copy-btn.copied {
+  color: var(--accent-green);
+  opacity: 1;
+}
+
+/* Code block + table copy buttons, overlaid on the top-right corner */
+.md-pre-wrap {
+  position: relative;
+}
+
+.md-table-copy,
+.md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.md-table-wrap:hover .md-table-copy,
+.md-table-copy:focus-visible,
+.md-table-copy.copied,
+.md-pre-wrap:hover .md-code-copy,
+.md-code-copy:focus-visible,
+.md-code-copy.copied {
+  opacity: 1;
+}
+
+.md-table-copy:hover,
+.md-code-copy:hover {
+  color: var(--accent-blue);
+}
+
+.md-table-copy.copied,
+.md-code-copy.copied {
+  color: var(--accent-green);
+}
+
+/* ========================================
    Context Reference
    ======================================== */
 
@@ -455,10 +647,9 @@ body {
 }
 
 .message.user .message-context {
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(6px);
+  background: var(--accent-blue-light);
+  border: 1px solid var(--user-msg-border);
+  color: var(--user-msg-text);
 }
 
 .context-icon {
@@ -590,6 +781,23 @@ body {
   border-color: rgba(74, 158, 255, 0.25);
 }
 
+/* Quote bar: a pending quoted AI reply for the next question */
+.preview-bar.quote {
+  background: var(--accent-warm-light);
+  border-color: var(--border-accent);
+}
+
+.preview-bar.quote .preview-label {
+  color: var(--accent-warm);
+}
+
+/* Quote chip on a sent message */
+.message .message-context.quote-chip {
+  background: var(--accent-warm-light);
+  border: 1px solid var(--border-accent);
+  color: var(--accent-warm);
+}
+
 .preview-content {
   display: flex;
   align-items: center;
@@ -643,6 +851,25 @@ body {
 .preview-close:hover {
   background: var(--bg-surface-hover);
   color: var(--text-primary);
+}
+
+/* "Grant site access" button shown in the preview bar when page capture
+   failed for lack of the standing host permission */
+.preview-authorize {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-full);
+  background: var(--accent-warm-light);
+  color: var(--accent-warm);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.preview-authorize:hover {
+  background: rgba(229, 161, 74, 0.22);
 }
 
 /* Input Wrapper */

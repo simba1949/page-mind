@@ -8,6 +8,7 @@
     "copy:assets": "node copy-assets.js",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:types": "tsc -p tsconfig.test.json",
     "lint": "tsc --noEmit",
     "clean": "rimraf dist"
   },

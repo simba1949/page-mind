@@ -66,16 +66,45 @@ class BackgroundService {
    * Set up tab switch listener - notify side panel to refresh
    */
   private setupTabListener(): void {
-    // Listen for tab switches
-    chrome.tabs.onActivated.addListener(async (activeInfo) => {
+    // Notify the side panel that the page it should reference changed.
+    // url/title are included when the extension can see them (site access
+    // granted); the panel uses them for instant feedback.
+    const notifyTabChanged = async (tabId: number): Promise<void> => {
       try {
-        await chrome.runtime.sendMessage({
-          type: 'TAB_CHANGED',
-          tabId: activeInfo.tabId
-        });
+        let url = '';
+        let title = '';
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          url = tab.url || '';
+          title = tab.title || '';
+        } catch {
+          // Tab already gone — still notify so the panel clears its state.
+        }
+        await chrome.runtime.sendMessage({ type: 'TAB_CHANGED', tabId, url, title });
       } catch (error) {
         // Side panel might not be open, ignore
       }
+    };
+
+    // Listen for tab switches within a window
+    chrome.tabs.onActivated.addListener((activeInfo) => {
+      void notifyTabChanged(activeInfo.tabId);
+    });
+
+    // Window focus changes: tabs.onActivated does NOT fire when the user
+    // merely focuses another window, so without this the side panel kept
+    // referencing the previously focused window's page.
+    chrome.windows.onFocusChanged.addListener((windowId) => {
+      // WINDOW_ID_NONE means Chrome itself lost focus — keep last state.
+      if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+      void (async () => {
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, windowId });
+          await notifyTabChanged(tab?.id ?? -1);
+        } catch (error) {
+          // ignore
+        }
+      })();
     });
 
     // Listen for page refresh/navigation (full page load)
@@ -141,6 +170,17 @@ class BackgroundService {
           sendResponse({ success: true, data: pageContent });
           break;
 
+        case 'GET_ACTIVE_TAB': {
+          // Cheap probe (no scripting): lets the side panel check whether a
+          // captured page context still belongs to the tab it's looking at.
+          const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          sendResponse({
+            success: true,
+            data: { tabId: tab?.id ?? -1, url: tab?.url || '' }
+          });
+          break;
+        }
+
         case 'GET_SELECTION':
           const selection = await this.getSelectionContent();
           sendResponse({ success: true, data: selection });
@@ -167,24 +207,20 @@ class BackgroundService {
    * Get page content from the active tab
    */
   private async getPageContent(): Promise<any> {
-    // Query for active tab, filtering out the side panel and other non-web tabs
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    let tab = tabs.find(t => t.url && (t.url.startsWith('http://') || t.url.startsWith('https://')));
-
-    // If no web tab is active, get the last active web tab in the window
-    if (!tab) {
-      const allTabs = await chrome.tabs.query({ currentWindow: true });
-      tab = allTabs.reverse().find(t => t.url && (t.url.startsWith('http://') || t.url.startsWith('https://')));
-    }
-
-    // No readable web tab (e.g. the user is on a chrome:// page or the new
-    // tab page). This is a normal state, not an error — respond with no
-    // content instead of failing the whole message.
-    if (!tab || !tab.id) {
+    // Always read the tab the user is actually looking at. Do not filter by
+    // tab.url — the field is hidden without site-access permission, which
+    // made this report "no web tab" even on normal pages — and do not fall
+    // back to some other http tab in the window: that captured pages the
+    // user was not viewing. Pages that cannot be injected (chrome://, Web
+    // Store, PDF viewer) simply yield no content below.
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id) {
       return null;
     }
 
-    const results = await chrome.scripting.executeScript({
+    let results;
+    try {
+      results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
         // Extract main content from the page - WITHOUT modifying the DOM
@@ -238,7 +274,12 @@ class BackgroundService {
           content: content.substring(0, 8000)
         };
       }
-    });
+      });
+    } catch {
+      // Non-injectable page (chrome://, Chrome Web Store, PDF viewer…) —
+      // nothing to read, not an error.
+      return null;
+    }
 
     if (results && results[0] && results[0].result) {
       const { title, url, content } = results[0].result;
@@ -257,7 +298,7 @@ class BackgroundService {
    * Get selected text content from the active tab
    */
   private async getSelectionContent(): Promise<any> {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
 
     // No readable tab to inspect — not an error, just nothing selected.
     if (!tab?.id) {
@@ -376,8 +417,16 @@ class BackgroundService {
    * Open side panel for a specific tab
    */
   private async openSidePanel(tabId?: number): Promise<void> {
-    if (tabId) {
-      await chrome.sidePanel.open({ tabId });
+    // tab.id can be TAB_ID_NONE (-1) for prerendered/special tabs; those
+    // pass the truthiness guard, so exclude them explicitly. The open()
+    // call itself can still reject (panel already open, gesture lost), and
+    // an unhandled rejection there crashes the worker's console.
+    if (tabId && tabId !== chrome.tabs.TAB_ID_NONE) {
+      try {
+        await chrome.sidePanel.open({ tabId });
+      } catch (error) {
+        console.error('Failed to open side panel:', error);
+      }
     }
   }
 }

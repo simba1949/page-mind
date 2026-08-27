@@ -73,6 +73,21 @@
           </button>
         </div>
 
+        <!-- Quote Bar (pending quoted AI reply for the next question) -->
+        <div id="quote-bar" class="preview-bar quote hidden" aria-live="polite">
+          <div class="preview-content">
+            <span class="preview-icon">💬</span>
+            <span class="preview-label" id="quote-label">引用</span>
+            <span class="preview-text" id="quote-text"></span>
+          </div>
+          <button id="quote-close" class="preview-close" title="取消引用" aria-label="取消引用">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
         <!-- Preview Bar (Selection or Page) -->
         <div id="preview-bar" class="preview-bar page hidden">
           <div class="preview-content">
@@ -206,6 +221,6 @@
     </div>
   </div>
 
-  <script src="sidepanel.js"></script>
+  <script type="module" src="sidepanel.js"></script>
 </body>
 </html>
