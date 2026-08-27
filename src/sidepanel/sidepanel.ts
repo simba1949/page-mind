@@ -93,7 +93,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     apiKey: '',
     model: 'gpt-3.5-turbo',
     baseUrl: 'https://api.openai.com/v1',
-    maxTokens: 2048,
+    maxTokens: 4096,
     temperature: 0.7
   },
   language: 'zh', // 默认中文
@@ -813,7 +813,8 @@ class APIService {
         role: msg.role,
         content: msg.content
       })),
-      max_tokens: this.config.maxTokens,
+      // No max_tokens cap: let the reply run to its natural end. A low cap
+      // here was silently truncating long replies mid-sentence.
       temperature: this.config.temperature,
       stream: true
     };
@@ -918,7 +919,9 @@ class APIService {
 
     const requestBody = {
       model: this.config.model,
-      max_tokens: this.config.maxTokens || 2048,
+      // Anthropic requires max_tokens; set it high so replies aren't cut
+      // short mid-sentence.
+      max_tokens: 8192,
       temperature: this.config.temperature,
       stream: true,
       messages: conversationMessages.map(msg => ({
