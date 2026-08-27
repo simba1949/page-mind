@@ -4,6 +4,7 @@ export interface APIConfig {
   apiKey: string;
   model: string;
   baseUrl?: string; // Custom base URL for compatible APIs
+  customModels?: string[]; // Manual model list; when set, the model dropdown uses it instead of querying the API
   maxTokens?: number;
   temperature?: number;
 }

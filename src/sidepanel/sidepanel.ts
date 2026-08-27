@@ -25,6 +25,7 @@ interface APIConfig {
   apiKey: string;
   model: string;
   baseUrl?: string; // Custom base URL for compatible APIs
+  customModels?: string[]; // Manual model list; when set, the model dropdown uses it instead of querying the API
   maxTokens?: number;
   temperature?: number;
 }
@@ -258,6 +259,21 @@ function normalizeBaseUrl(value: string): string {
   return url.toString().replace(/\/+$/, '');
 }
 
+/**
+ * Parse a user-entered custom model list (comma or newline separated) into
+ * normalized model IDs. Empty entries and duplicates are dropped.
+ */
+function parseCustomModels(value: string): string[] {
+  const seen = new Set<string>();
+  for (const part of value.split(/[\n,]+/)) {
+    const model = part.trim();
+    if (model) {
+      seen.add(model);
+    }
+  }
+  return [...seen].slice(0, 100);
+}
+
 async function ensureEndpointPermission(baseUrl: string, requestPermission: boolean): Promise<boolean> {
   const url = new URL(normalizeBaseUrl(baseUrl));
   const origin = `${url.protocol}//${url.hostname}/*`;
@@ -318,6 +334,24 @@ class APIService {
   }
 
   /**
+   * Parse the response body as JSON, surfacing an actionable error when the
+   * endpoint answered with an HTML page instead — the typical symptom of a
+   * base URL pointing at a website or gateway UI rather than the API itself.
+   */
+  private async parseJsonBody(response: Response): Promise<any> {
+    const contentType = response.headers.get('content-type') || '';
+    const body = await response.text();
+    if (contentType.includes('text/html') || body.trimStart().startsWith('<')) {
+      throw new Error(I18nService.t('msg.htmlResponse'));
+    }
+    try {
+      return JSON.parse(body);
+    } catch {
+      throw new Error(I18nService.t('msg.invalidJson'));
+    }
+  }
+
+  /**
    * Fetch available models from the API endpoint
    */
   async fetchModels(): Promise<string[]> {
@@ -359,7 +393,7 @@ class APIService {
       throw new Error(errorData.error?.message || `HTTP ${response.status}`);
     }
 
-    const data = await response.json();
+    const data = await this.parseJsonBody(response);
     const models = (data.data || [])
       .map((model: any) => model?.id)
       .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length <= 200)
@@ -374,12 +408,34 @@ class APIService {
   }
 
   /**
-   * Fetch models from Anthropic compatible API
-   * Note: Anthropic doesn't provide a public models endpoint, so we use preset list
+   * Fetch models from an Anthropic compatible API. Modern Anthropic APIs and
+   * gateways (New API, One API...) expose the OpenAI-style GET /models route;
+   * try it and fall back to the preset list when the endpoint lacks it.
    */
-  private async fetchAnthropicModels(_baseUrl: string): Promise<string[]> {
-    // Anthropic compatible APIs typically don't have a /models endpoint
-    // Return preset models as fallback
+  private async fetchAnthropicModels(baseUrl: string): Promise<string[]> {
+    try {
+      const response = await this.request(`${baseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          'x-api-key': this.config.apiKey,
+          'Authorization': `Bearer ${this.config.apiKey}`,
+          'anthropic-version': '2023-06-01'
+        }
+      });
+      if (response.ok) {
+        const data = await this.parseJsonBody(response);
+        const models = (data.data || data.models || [])
+          .map((model: any) => model?.id || model?.name)
+          .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length <= 200)
+          .slice(0, 500)
+          .sort((a: string, b: string) => a.localeCompare(b));
+        if (models.length > 0) {
+          return models;
+        }
+      }
+    } catch {
+      // Endpoint doesn't serve /models — use the preset list below
+    }
     return API_PRESETS.anthropic.models;
   }
 
@@ -440,7 +496,9 @@ class APIService {
       try {
         errorData = JSON.parse(errorText);
       } catch {
-        errorData = { message: errorText };
+        // For an HTML error page (404 etc.) the status code says it all;
+        // only non-HTML text bodies are worth surfacing verbatim.
+        errorData = errorText.trimStart().startsWith('<') ? {} : { message: errorText };
       }
       throw new Error(errorData.error?.message || errorData.message || `HTTP ${response.status}`);
     }
@@ -454,7 +512,7 @@ class APIService {
     // parsing it directly rather than silently returning nothing.
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('text/event-stream')) {
-      const data = await response.json();
+      const data = await this.parseJsonBody(response);
       const responseMessage = data.choices?.[0]?.message || {};
       const fullReasoning = responseMessage.reasoning_content || responseMessage.reasoning || '';
       const fullContent = responseMessage.content || '';
@@ -557,7 +615,7 @@ class APIService {
     // parsing it directly rather than silently returning nothing.
     const contentType = response.headers.get('content-type') || '';
     if (!contentType.includes('text/event-stream')) {
-      const data = await response.json();
+      const data = await this.parseJsonBody(response);
       const blocks: any[] = Array.isArray(data.content) ? data.content : [];
       const fullContent = blocks.filter(block => block?.type === 'text').map(block => block.text).join('\n\n');
       const fullReasoning = blocks.filter(block => block?.type === 'thinking').map(block => block.thinking).join('\n\n');
@@ -716,6 +774,11 @@ const translations = {
     'msg.noEndpoint': 'Please enter the API endpoint',
     'msg.noEndpointPermission': 'Access to the API domain was not granted',
     'msg.noModels': 'No models available',
+    'msg.htmlResponse': 'The endpoint returned an HTML page instead of JSON. Check the API endpoint URL (e.g. a missing /v1 path, or a website address instead of the API).',
+    'msg.invalidJson': 'The endpoint returned an invalid JSON response',
+    'help.baseUrlV1Hint': 'Tip: OpenAI-compatible endpoints usually end with /v1 (e.g. https://api.openai.com/v1).',
+    'settings.customModels': 'Custom models',
+    'help.customModels': 'Comma-separated model IDs. When set, the model dropdown uses these directly instead of querying the API (for APIs without a model list endpoint).',
     'quick.summarizePrompt': 'Summarize the main points of this page.',
     'quick.explainPrompt': 'Explain the most important ideas on this page in simple terms.',
     'quick.translatePrompt': 'Translate the key content of this page into English.',
@@ -779,6 +842,11 @@ const translations = {
     'msg.noEndpoint': '请输入 API 端点',
     'msg.noEndpointPermission': '未授予该 API 域名的访问权限',
     'msg.noModels': '没有可用的模型',
+    'msg.htmlResponse': '端点返回的是网页而非 JSON。请检查 API 端点是否正确（例如缺少 /v1 路径，或填成了网站地址）',
+    'msg.invalidJson': '端点返回了无效的 JSON 响应',
+    'help.baseUrlV1Hint': '提示：OpenAI 兼容端点通常以 /v1 结尾（如 https://api.openai.com/v1）。',
+    'settings.customModels': '自定义模型',
+    'help.customModels': '用逗号分隔多个模型 ID；填写后模型列表直接使用它们，不再从 API 获取（适用于不支持模型列表接口的 API）',
     'quick.summarizePrompt': '总结当前页面的核心内容和关键结论。',
     'quick.explainPrompt': '用通俗易懂的语言解释当前页面最重要的内容。',
     'quick.translatePrompt': '将当前页面的关键内容翻译成中文。',
@@ -905,10 +973,18 @@ class SidePanelController {
   }
 
   /**
-   * Auto-fetch models if baseUrl and apiKey are already configured
+   * Auto-fetch models if baseUrl and apiKey are already configured.
+   * A manually configured model list takes precedence: the dropdown is
+   * populated from it directly and the endpoint is never queried.
    */
   private async autoFetchModels(): Promise<void> {
     const settings = await StorageService.getSettings();
+    const customModels = settings.api.customModels || [];
+    if (customModels.length > 0) {
+      this.availableModels = customModels;
+      this.populateModelSelect(customModels);
+      return;
+    }
     if (settings.api.baseUrl && settings.api.apiKey) {
       try {
         if (await ensureEndpointPermission(settings.api.baseUrl, false)) {
@@ -982,8 +1058,12 @@ class SidePanelController {
       const provider = providerSelect.value as 'openai' | 'anthropic';
       const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
       baseUrlInput.value = API_PRESETS[provider].baseUrl;
+      this.updateBaseUrlHint();
       this.testResult.classList.add('hidden');
     });
+
+    // Live-check the endpoint field and show the /v1 advisory hint if needed
+    document.getElementById('base-url')?.addEventListener('input', () => this.updateBaseUrlHint());
 
     // New chat
     this.clearBtn.addEventListener('click', () => this.newChat());
@@ -1707,9 +1787,19 @@ Instructions:
     this.headerModelSelect.disabled = false;
 
     // Try to select the previously saved model
-    StorageService.getSettings().then(settings => {
+    StorageService.getSettings().then(async settings => {
       if (settings.api.model && models.includes(settings.api.model)) {
         this.headerModelSelect.value = settings.api.model;
+      } else if (settings.api.model) {
+        // The saved model isn't offered by this endpoint (provider switched,
+        // or a different gateway). Clear it so chat reports "no model
+        // selected" instead of sending requests for a model the endpoint
+        // will reject anyway.
+        settings.api.model = '';
+        await StorageService.saveSettings(settings);
+        if (this.apiService) {
+          this.apiService = new APIService({ ...settings.api, model: '' });
+        }
       }
     });
   }
@@ -1789,6 +1879,20 @@ Instructions:
   }
 
   /**
+   * Toggle the advisory hint under the endpoint field: shown when the
+   * entered URL has no version path segment (/v1, /v4, ...). Advisory only —
+   * some providers (e.g. DeepSeek) legitimately serve the API at the root.
+   */
+  private updateBaseUrlHint(): void {
+    const baseUrlInput = document.getElementById('base-url') as HTMLInputElement | null;
+    const hint = document.getElementById('base-url-hint');
+    if (!baseUrlInput || !hint) return;
+    const value = baseUrlInput.value.trim();
+    const endsWithVersion = /\/v\d+[a-z]*\/?$/i.test(value);
+    hint.classList.toggle('hidden', value === '' || endsWithVersion);
+  }
+
+  /**
    * Populate settings form with current values
    */
   private async populateSettingsForm(): Promise<void> {
@@ -1798,14 +1902,29 @@ Instructions:
     const baseUrlInput = document.getElementById('base-url') as HTMLInputElement | null;
     const apiKeyInput = document.getElementById('api-key') as HTMLInputElement | null;
     const rememberKeyInput = document.getElementById('remember-api-key') as HTMLInputElement | null;
+    const customModelsInput = document.getElementById('custom-models') as HTMLInputElement | null;
 
     if (!providerSelect || !baseUrlInput || !apiKeyInput) return;
 
     providerSelect.value = settings.api.provider;
     baseUrlInput.value = settings.api.baseUrl || API_PRESETS[settings.api.provider].baseUrl;
     apiKeyInput.value = settings.api.apiKey;
+    this.updateBaseUrlHint();
     if (rememberKeyInput) {
       rememberKeyInput.checked = settings.rememberApiKey;
+    }
+    if (customModelsInput) {
+      customModelsInput.value = (settings.api.customModels || []).join(', ');
+    }
+
+    const customModels = settings.api.customModels || [];
+    if (customModels.length > 0) {
+      // Custom models take precedence: show them without querying the endpoint
+      if (this.availableModels.length === 0) {
+        this.availableModels = customModels;
+        this.populateModelSelect(customModels);
+      }
+      return;
     }
 
     // If we have baseUrl and apiKey, auto-fetch models (only if list is empty)
@@ -1823,6 +1942,7 @@ Instructions:
     const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
     const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
     const rememberKeyInput = document.getElementById('remember-api-key') as HTMLInputElement;
+    const customModelsInput = document.getElementById('custom-models') as HTMLInputElement | null;
 
     const settings = await StorageService.getSettings();
 
@@ -1841,6 +1961,7 @@ Instructions:
     settings.api.provider = providerSelect.value as 'openai' | 'anthropic';
     settings.api.baseUrl = baseUrl;
     settings.api.apiKey = apiKeyInput.value.trim();
+    settings.api.customModels = parseCustomModels(customModelsInput?.value ?? '');
     settings.rememberApiKey = rememberKeyInput.checked;
 
     // Update API service with currently selected model (if any)
@@ -1855,11 +1976,18 @@ Instructions:
       this.apiService = new APIService(settings.api);
     }
 
-    // After saving, trigger model fetch and select first model automatically
-    await this.fetchModels();
+    if (settings.api.customModels.length > 0) {
+      // Custom models take precedence: populate the dropdown from the saved
+      // list directly and never query the endpoint's /models route.
+      this.availableModels = settings.api.customModels;
+      await this.populateModelSelect(this.availableModels);
+    } else {
+      // After saving, trigger model fetch and select first model automatically
+      await this.fetchModels();
 
-    // Select the first model automatically if available
-    await this.populateModelSelect(this.availableModels);
+      // Select the first model automatically if available
+      await this.populateModelSelect(this.availableModels);
+    }
 
     // Update UI language
     I18nService.setLanguage(settings.language);
@@ -1898,34 +2026,26 @@ Instructions:
       if (!await ensureEndpointPermission(baseUrl, true)) {
         throw new Error('未授予该 API 域名的访问权限');
       }
-      let response: Response;
-
-      if (provider === 'openai') {
-        // Test OpenAI compatible API
-        response = await fetch(`${baseUrl}/models`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`
-          }
-        });
-      } else {
-        // Test Anthropic compatible API
-        response = await fetch(`${baseUrl}/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
+      // Both provider formats expose GET /models. Testing it verifies the
+      // endpoint and key without depending on any particular model being
+      // available — gateways answer "no channel for model X" only after
+      // auth succeeds, so a model-specific test conflates two different
+      // problems.
+      const headers: Record<string, string> = provider === 'openai'
+        ? { 'Authorization': `Bearer ${apiKey}` }
+        : {
             'x-api-key': apiKey,
+            'Authorization': `Bearer ${apiKey}`,
             'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: 'claude-3-haiku-20240307',
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'hi' }]
-          })
-        });
-      }
+          };
+      const response = await fetch(`${baseUrl}/models`, { method: 'GET', headers });
 
-      if (response.ok) {
+      // A 200 response whose body is an HTML page means the URL points at
+      // a website (or gateway UI), not the API — treat it as a failure.
+      const contentType = response.headers.get('content-type') || '';
+      if (response.ok && contentType.includes('text/html')) {
+        this.showTestResult(false, I18nService.t('msg.htmlResponse'));
+      } else if (response.ok) {
         this.showTestResult(true, '连接成功！API 配置正确');
       } else {
         const errorData = await response.json().catch(() => ({}));
@@ -1963,9 +2083,12 @@ Instructions:
       'label-api-provider': 'settings.apiProvider',
       'label-base-url': 'settings.baseUrl',
       'label-api-key': 'settings.apiKey',
+      'label-custom-models': 'settings.customModels',
+      'help-custom-models': 'help.customModels',
       'label-model': 'settings.model',
       'save-text': 'settings.save',
       'help-base-url': 'help.baseUrl',
+      'base-url-hint': 'help.baseUrlV1Hint',
       'help-model': 'help.model',
       'fetch-text': 'btn.fetch',
       'privacy-status': 'status.localSession',

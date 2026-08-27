@@ -2,11 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "sidepanel",
+      "name": "extension-dist",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["http-server", "dist/sidepanel", "-p", "8080"],
-      "port": 8080,
-      "url": "http://localhost:8080/"
+      "runtimeArgs": ["http-server", "dist", "-p", "8123", "-c-1", "--silent"],
+      "port": 8123
     }
   ]
 }

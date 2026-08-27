@@ -142,6 +142,7 @@
               spellcheck="false"
             >
             <small id="help-base-url" class="help-text">自定义 API 服务端点</small>
+            <small id="base-url-hint" class="help-text url-hint hidden">提示：OpenAI 兼容端点通常以 /v1 结尾（如 https://api.openai.com/v1）。</small>
           </div>
 
           <div class="setting-group">
@@ -153,6 +154,18 @@
               autocomplete="new-password"
               spellcheck="false"
             >
+          </div>
+
+          <div class="setting-group">
+            <label id="label-custom-models">自定义模型</label>
+            <input
+              type="text"
+              id="custom-models"
+              placeholder="model-a, model-b"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <small id="help-custom-models" class="help-text">用逗号分隔多个模型 ID；填写后模型列表直接使用它们，不再从 API 获取（适用于不支持模型列表接口的 API）</small>
           </div>
 
           <div class="setting-group checkbox-group">

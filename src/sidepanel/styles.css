@@ -828,6 +828,20 @@ body {
   color: var(--text-muted);
 }
 
+/* Advisory hint under the endpoint field: shown when the entered URL lacks
+   a version path segment (/v1, /v4, ...). Amber, not red — some providers
+   legitimately serve the API at the root, so it never blocks anything. */
+.url-hint {
+  display: block;
+  margin-top: var(--space-xs);
+  font-size: 11px;
+  color: var(--accent-warm);
+}
+
+.url-hint.hidden {
+  display: none;
+}
+
 .key-storage-tip {
   display: inline-flex;
   align-items: center;

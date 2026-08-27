@@ -177,8 +177,11 @@ class BackgroundService {
       tab = allTabs.reverse().find(t => t.url && (t.url.startsWith('http://') || t.url.startsWith('https://')));
     }
 
+    // No readable web tab (e.g. the user is on a chrome:// page or the new
+    // tab page). This is a normal state, not an error — respond with no
+    // content instead of failing the whole message.
     if (!tab || !tab.id) {
-      throw new Error('No active web tab found');
+      return null;
     }
 
     const results = await chrome.scripting.executeScript({
@@ -256,8 +259,9 @@ class BackgroundService {
   private async getSelectionContent(): Promise<any> {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    if (!tab.id) {
-      throw new Error('No active tab found');
+    // No readable tab to inspect — not an error, just nothing selected.
+    if (!tab?.id) {
+      return null;
     }
 
     const results = await chrome.scripting.executeScript({
