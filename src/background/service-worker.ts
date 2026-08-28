@@ -305,7 +305,9 @@ class BackgroundService {
       return null;
     }
 
-    const results = await chrome.scripting.executeScript({
+    let results;
+    try {
+      results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: () => {
         const selection = window.getSelection();
@@ -322,7 +324,12 @@ class BackgroundService {
           content: selectedText.substring(0, 8000)
         };
       }
-    });
+      });
+    } catch {
+      // Non-injectable page (chrome://, another extension's page, Web
+      // Store, PDF viewer…) — there is no selection to read there.
+      return null;
+    }
 
     if (results && results[0] && results[0].result) {
       const { title, url, content } = results[0].result;

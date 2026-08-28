@@ -13,8 +13,151 @@ interface ChatMessage {
   // A previous AI reply the user quoted for this message; sent alongside
   // the question, kept out of the composer.
   quote?: string;
+  // Files attached to this message: images ride along as vision content,
+  // text files are inlined into the prompt.
+  attachments?: MessageAttachment[];
   reasoning?: string;
 }
+
+/** A user-attached file. Images keep a (downscaled) data URL; text files
+ *  keep their extracted content. */
+interface MessageAttachment {
+  id: string;
+  kind: 'image' | 'text';
+  name: string;
+  mime: string;
+  dataUrl?: string;
+  text?: string;
+}
+
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+const TEXT_FILE_RE = /\.(txt|md|markdown|json|csv|log|xml|yml|yaml|ts|tsx|js|jsx|mjs|py|java|c|cpp|h|hpp|css|scss|html|htm|sql|sh|bat|ps1|go|rs|rb|php)$/i;
+
+/** Decide how a file can participate in a chat message. */
+export function classifyFile(name: string, mime: string): 'image' | 'text' | null {
+  if (mime.startsWith('image/')) return 'image';
+  if (IMAGE_FILE_RE.test(name)) return 'image';
+  if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml' ||
+      mime === 'application/javascript' || mime === 'application/x-yaml') {
+    return 'text';
+  }
+  return TEXT_FILE_RE.test(name) ? 'text' : null;
+}
+
+/** Delimited block that inlines a text attachment into the prompt. */
+export function attachmentPromptBlock(name: string, text: string): string {
+  return `=== 附件：${name} ===\n${text}\n=== 附件结束 ===`;
+}
+
+/** Message text with its text-file attachments appended for the prompt. */
+export function withAttachmentText(message: { content: string; attachments?: MessageAttachment[] }): string {
+  const textFiles = (message.attachments || []).filter(a => a.kind === 'text');
+  if (textFiles.length === 0) return message.content;
+  return message.content + '\n\n' +
+    textFiles.map(a => attachmentPromptBlock(a.name, a.text || '')).join('\n\n');
+}
+
+/** Split a data URL into its mime type and base64 payload. */
+function parseDataUrl(dataUrl: string): { mime: string; data: string } | null {
+  const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+  return match ? { mime: match[1], data: match[2] } : null;
+}
+
+/**
+ * OpenAI content for one message: plain text, or a mixed text + image_url
+ * parts array when the message carries image attachments.
+ */
+function openAIMessageContent(msg: ChatMessage, includeImages: boolean): unknown {
+  const images = includeImages
+    ? (msg.attachments || []).filter(a => a.kind === 'image' && a.dataUrl)
+    : [];
+  if (images.length === 0) return msg.content;
+  return [
+    { type: 'text', text: msg.content },
+    ...images.map(a => ({ type: 'image_url', image_url: { url: a.dataUrl } }))
+  ];
+}
+
+/** Anthropic content blocks for one message, with base64 image blocks. */
+function anthropicMessageContent(msg: ChatMessage, includeImages: boolean): unknown {
+  const images = includeImages
+    ? (msg.attachments || []).filter(a => a.kind === 'image' && a.dataUrl)
+    : [];
+  if (images.length === 0) return msg.content;
+  const imageBlocks = images
+    .map(a => parseDataUrl(a.dataUrl!))
+    .filter((parsed): parsed is { mime: string; data: string } => Boolean(parsed))
+    .map(parsed => ({
+      type: 'image',
+      source: { type: 'base64', media_type: parsed.mime, data: parsed.data }
+    }));
+  return [{ type: 'text', text: msg.content }, ...imageBlocks];
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+}
+
+/**
+ * Downscale an image data URL so payloads stay reasonable: cap the longest
+ * edge and re-encode as JPEG (white matte for transparency). Returns the
+ * original when it is already small enough or when re-encoding wouldn't help.
+ */
+async function downscaleImageDataUrl(dataUrl: string, maxDimension = 1280): Promise<string> {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('image decode failed'));
+    el.src = dataUrl;
+  });
+  const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+  if (scale === 1 && dataUrl.length < 1_500_000) return dataUrl;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return dataUrl;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const jpeg = canvas.toDataURL('image/jpeg', 0.85);
+  return jpeg.length < dataUrl.length ? jpeg : dataUrl;
+}
+
+/** Extract the files carried by a paste or drop event. */
+export function filesFromDataTransfer(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  for (const item of Array.from(data.items || [])) {
+    if (item.kind === 'file') {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  return files;
+}
+
+// Message limits
+const LIMITS = {
+  MAX_CONTEXT_LENGTH: 8000,
+  MAX_MESSAGE_LENGTH: 4000,
+  MAX_HISTORY_MESSAGES: 100,
+  MAX_ATTACHMENTS: 4
+} as const;
 
 interface PageContext {
   type: 'full_page' | 'selection';
@@ -56,6 +199,29 @@ function sanitizePageContext(value: unknown): PageContext | null {
     title: candidate.title.slice(0, 300),
     content: candidate.content.slice(0, LIMITS.MAX_CONTEXT_LENGTH)
   };
+}
+
+/** Validate and cap attachments loaded from persisted chat history. */
+// Images must be inline data URLs (data:image/...) — a tampered history entry
+// pointing at a remote URL would otherwise load it from the network.
+export function sanitizeAttachments(value: unknown): MessageAttachment[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const cleaned = value
+    .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object')
+    .filter(a => a.kind === 'image'
+      ? typeof a.dataUrl === 'string' && a.dataUrl.startsWith('data:image/')
+      : typeof a.text === 'string')
+    .slice(0, LIMITS.MAX_ATTACHMENTS)
+    .map(a => ({
+      id: typeof a.id === 'string' ? a.id : '',
+      kind: a.kind === 'image' ? 'image' as const : 'text' as const,
+      name: typeof a.name === 'string' ? a.name.slice(0, 200) : 'file',
+      mime: typeof a.mime === 'string' ? a.mime.slice(0, 100) : '',
+      ...(a.kind === 'image'
+        ? { dataUrl: String(a.dataUrl).slice(0, 3_000_000) }
+        : { text: String(a.text).slice(0, 64_000) })
+    }));
+  return cleaned.length > 0 ? cleaned : undefined;
 }
 
 // API format presets for common providers
@@ -108,13 +274,6 @@ const STORAGE_KEYS = {
   CONVERSATIONS: 'conversations',
   ENCRYPTION_KEY: 'encryption_key',
   SESSION_API_KEY: 'session_api_key'
-} as const;
-
-// Message limits
-const LIMITS = {
-  MAX_CONTEXT_LENGTH: 8000,
-  MAX_MESSAGE_LENGTH: 4000,
-  MAX_HISTORY_MESSAGES: 100
 } as const;
 
 // Storage service for managing application data
@@ -206,7 +365,8 @@ class StorageService {
           context: sanitizePageContext(message.context) || undefined,
           reasoning: typeof message.reasoning === 'string'
             ? message.reasoning.slice(0, 20_000)
-            : undefined
+            : undefined,
+          attachments: sanitizeAttachments((message as { attachments?: unknown }).attachments)
         }));
     } catch (error) {
       console.error('Failed to load chat history:', error);
@@ -335,23 +495,42 @@ function mdRestoreFence(line: string, fences: string[]): string {
 }
 
 /**
- * Inline markdown on escaped text: code spans, links, bold, italic,
- * strikethrough. Code spans are masked with \u0000 so the emphasis rules
- * can't touch their content.
+ * Inline markdown on escaped text: code spans, links (markdown syntax and
+ * bare URLs), bold, italic, strikethrough. Generated HTML (code spans,
+ * anchors) is masked before the emphasis rules run, so URL text can never
+ * be mistaken for emphasis syntax (e.g. __init__ inside a link would
+ * otherwise be bolded and corrupt the href).
  */
 function mdInline(text: string, fences: string[]): string {
-  const codes: string[] = [];
-  let out = text.replace(/`([^`\n]+)`/g, (_m, code: string) => {
-    codes.push(`<code class="md-code">${code}</code>`);
-    return `\u0000${codes.length - 1}\u0000`;
-  });
+  const masked: string[] = [];
+  const mask = (html: string): string => {
+    masked.push(html);
+    return `\u0000${masked.length - 1}\u0000`;
+  };
+
+  let out = text.replace(/`([^`\n]+)`/g, (_m, code: string) =>
+    mask(`<code class="md-code">${code}</code>`));
+
   out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    (_m, label: string, url: string) =>
+      mask(`<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`));
+
+  // Bare URLs become clickable too. The URL stops at whitespace, quotes,
+  // common markdown characters and CJK punctuation, so trailing prose
+  // (including full-width brackets and sentence marks) stays outside.
+  out = out.replace(/(^|[\s>(（【])(https?:\/\/[^\s<>"*）】」』。、，；：！？]+)/g, (_m, lead: string, url: string) => {
+    const trimmed = url.replace(/(?:&quot;|[.,;:!?)\]。、，；：！？」』】）])+$/, '');
+    if (!trimmed) return _m;
+    const rest = url.slice(trimmed.length);
+    return lead + mask(`<a href="${trimmed}" target="_blank" rel="noopener noreferrer">${trimmed}</a>`) + rest;
+  });
+
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   out = out.replace(/__([^_]+)__/g, '<strong>$1</strong>');
   out = out.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
   out = out.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
-  out = out.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => codes[Number(index)]);
+
+  out = out.replace(/\u0000(\d+)\u0000/g, (_m, index: string) => masked[Number(index)]);
   out = out.replace(/\u0001(\d+)\u0001/g, (_m, index: string) => fences[Number(index)]);
   return out;
 }
@@ -641,6 +820,70 @@ interface StreamHandlers {
   onContent?: (delta: string) => void;
 }
 
+/**
+ * Pull <think>/<thinking> blocks out of a completed message body. Some
+ * reasoning models on OpenAI-compatible gateways inline their thinking in
+ * the content field instead of using a dedicated reasoning delta.
+ */
+export function stripThinkTags(text: string): { content: string; reasoning: string } {
+  const reasoning: string[] = [];
+  let content = text
+    .replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi, (_m, inner: string) => {
+      reasoning.push(inner.trim());
+      return '';
+    });
+  // Unclosed think block: everything after the opener is thinking
+  const unclosed = content.match(/<think(?:ing)?>([\s\S]*)$/i);
+  if (unclosed && unclosed.index !== undefined) {
+    reasoning.push(unclosed[1].trim());
+    content = content.slice(0, unclosed.index);
+  }
+  content = content.replace(/<\/?think(?:ing)?>/gi, '');
+  return { content: content.trimStart(), reasoning: reasoning.filter(Boolean).join('\n') };
+}
+
+/**
+ * Streaming variant of stripThinkTags: feed it raw content deltas, it emits
+ * each piece as either reasoning or answer. Tags may arrive split across
+ * deltas, so a trailing partial tag ("<thi…") is held back until it
+ * resolves. Call flush() when the stream ends to release any held text.
+ */
+export function createThinkSeparator(
+  emit: (kind: 'reasoning' | 'content', text: string) => void
+): { push: (delta: string) => void; flush: () => void } {
+  let inside = false;
+  let hold = '';
+
+  const push = (delta: string): void => {
+    let text = hold + delta;
+    hold = '';
+    for (;;) {
+      const tag = (inside ? /<\/think(?:ing)?>/i : /<think(?:ing)?>/i).exec(text);
+      if (!tag) break;
+      if (tag.index > 0) emit(inside ? 'reasoning' : 'content', text.slice(0, tag.index));
+      inside = !inside;
+      text = text.slice(tag.index + tag[0].length);
+    }
+    // A trailing "<" may be the start of a tag arriving in the next delta
+    const lt = text.lastIndexOf('<');
+    if (lt !== -1 && !text.slice(lt).includes('>')) {
+      hold = text.slice(lt);
+      text = text.slice(0, lt);
+    }
+    if (text) emit(inside ? 'reasoning' : 'content', text);
+  };
+
+  return {
+    push,
+    flush(): void {
+      if (hold) {
+        emit(inside ? 'reasoning' : 'content', hold);
+        hold = '';
+      }
+    }
+  };
+}
+
 // Base API service for LLM communication
 // Supports OpenAI/Anthropic compatible API formats with custom endpoints
 class APIService {
@@ -809,9 +1052,11 @@ class APIService {
 
     const requestBody = {
       model: this.config.model,
-      messages: messages.map(msg => ({
+      // Images ride along only on the final (outgoing) message — replaying
+      // every historical image would bloat each request.
+      messages: messages.map((msg, index) => ({
         role: msg.role,
-        content: msg.content
+        content: openAIMessageContent(msg, index === messages.length - 1)
       })),
       // No max_tokens cap: let the reply run to its natural end. A low cap
       // here was silently truncating long replies mid-sentence.
@@ -852,8 +1097,12 @@ class APIService {
     if (!contentType.includes('text/event-stream')) {
       const data = await this.parseJsonBody(response);
       const responseMessage = data.choices?.[0]?.message || {};
-      const fullReasoning = responseMessage.reasoning_content || responseMessage.reasoning || '';
-      const fullContent = responseMessage.content || '';
+      const separated = stripThinkTags(String(responseMessage.content || ''));
+      const fullReasoning = [
+        responseMessage.reasoning_content || responseMessage.reasoning || '',
+        separated.reasoning
+      ].filter(Boolean).join('\n');
+      const fullContent = separated.content;
       if (fullReasoning) handlers?.onReasoning?.(fullReasoning);
       if (fullContent) handlers?.onContent?.(fullContent);
       return {
@@ -870,6 +1119,18 @@ class APIService {
     let content = '';
     let reasoning = '';
     let usage: any = null;
+
+    // Routes content deltas through the <think> tag separator, accumulating
+    // the answer and thinking parts separately (see stripThinkTags).
+    const separateThink = createThinkSeparator((kind, text) => {
+      if (kind === 'reasoning') {
+        reasoning += text;
+        handlers?.onReasoning?.(text);
+      } else {
+        content += text;
+        handlers?.onContent?.(text);
+      }
+    });
 
     await this.consumeSSE(response.body, (payload) => {
       if (payload === '[DONE]') return;
@@ -895,10 +1156,12 @@ class APIService {
         handlers?.onReasoning?.(reasoningDelta);
       }
       if (typeof delta.content === 'string' && delta.content) {
-        content += delta.content;
-        handlers?.onContent?.(delta.content);
+        // Thinking may arrive inline as <think>…</think> inside content;
+        // split it out so it lands in the reasoning block, not the answer
+        separateThink.push(delta.content);
       }
     });
+    separateThink.flush();
 
     return {
       content,
@@ -924,9 +1187,9 @@ class APIService {
       max_tokens: 8192,
       temperature: this.config.temperature,
       stream: true,
-      messages: conversationMessages.map(msg => ({
+      messages: conversationMessages.map((msg, index) => ({
         role: msg.role,
-        content: msg.content
+        content: anthropicMessageContent(msg, index === conversationMessages.length - 1)
       })),
       ...(systemMessage && { system: systemMessage.content })
     };
@@ -1118,6 +1381,13 @@ const translations = {
     'btn.copied': 'Copied',
     'btn.copyTable': 'Copy table (Markdown)',
     'btn.copyCode': 'Copy code',
+    'reasoning.title': 'Thinking',
+    'btn.attach': 'Attach image or file',
+    'btn.removeAttachment': 'Remove attachment',
+    'msg.tooManyAttachments': 'Up to 4 attachments per message',
+    'msg.fileTooLarge': 'File is too large (images ≤ 8MB, text ≤ 256KB)',
+    'msg.unsupportedFile': 'Unsupported file type',
+    'msg.fileReadFailed': 'Failed to read file',
     'btn.quote': 'Quote reply',
     'btn.grantAccess': 'Grant site access',
     'context.noAccess': 'Cannot read this page',
@@ -1194,6 +1464,13 @@ const translations = {
     'btn.copied': '已复制',
     'btn.copyTable': '复制表格（Markdown）',
     'btn.copyCode': '复制代码',
+    'reasoning.title': '思考过程',
+    'btn.attach': '添加图片或文件',
+    'btn.removeAttachment': '移除附件',
+    'msg.tooManyAttachments': '每条消息最多 4 个附件',
+    'msg.fileTooLarge': '文件过大（图片 ≤ 8MB，文本 ≤ 256KB）',
+    'msg.unsupportedFile': '不支持的文件类型',
+    'msg.fileReadFailed': '文件读取失败',
     'btn.quote': '引用回复',
     'btn.grantAccess': '授权读取网站',
     'context.noAccess': '无法读取此页面',
@@ -1242,6 +1519,8 @@ class SidePanelController {
   private contextDismissed = false;
   // A quoted AI reply pending for the next outgoing message (one-shot)
   private quotedReply: string | null = null;
+  // Files attached to the next outgoing message
+  private pendingAttachments: MessageAttachment[] = [];
   private isSending = false;
 
   // DOM Elements
@@ -1264,6 +1543,9 @@ class SidePanelController {
   private previewCloseBtn!: HTMLButtonElement;
   private quoteBar!: HTMLElement;
   private quoteText!: HTMLElement;
+  private attachmentBar!: HTMLElement;
+  private attachBtn!: HTMLButtonElement;
+  private fileInput!: HTMLInputElement;
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1400,6 +1682,89 @@ class SidePanelController {
     this.quoteBar.classList.add('hidden');
   }
 
+  /** Classify, validate and queue pasted/selected/dropped files. */
+  private async addAttachmentFiles(files: File[]): Promise<void> {
+    for (const file of files) {
+      if (this.pendingAttachments.length >= LIMITS.MAX_ATTACHMENTS) {
+        this.showError(I18nService.t('msg.tooManyAttachments'));
+        break;
+      }
+      const kind = classifyFile(file.name, file.type);
+      if (!kind) {
+        this.showError(`${I18nService.t('msg.unsupportedFile')}: ${file.name}`);
+        continue;
+      }
+      try {
+        if (kind === 'image') {
+          if (file.size > 8_000_000) {
+            this.showError(I18nService.t('msg.fileTooLarge'));
+            continue;
+          }
+          const dataUrl = await downscaleImageDataUrl(await readFileAsDataUrl(file));
+          this.pendingAttachments.push({
+            id: this.generateId(),
+            kind: 'image',
+            name: file.name || 'image.png',
+            mime: 'image/jpeg',
+            dataUrl
+          });
+        } else {
+          if (file.size > 256_000) {
+            this.showError(I18nService.t('msg.fileTooLarge'));
+            continue;
+          }
+          const text = await readFileAsText(file);
+          this.pendingAttachments.push({
+            id: this.generateId(),
+            kind: 'text',
+            name: file.name || 'file.txt',
+            mime: file.type || 'text/plain',
+            text: text.slice(0, 64_000)
+          });
+        }
+      } catch {
+        this.showError(I18nService.t('msg.fileReadFailed'));
+      }
+    }
+    this.renderAttachmentBar();
+  }
+
+  /** Show the pending attachments as removable chips above the composer. */
+  private renderAttachmentBar(): void {
+    this.attachmentBar.replaceChildren();
+    for (const attachment of this.pendingAttachments) {
+      const chip = document.createElement('div');
+      chip.className = 'attachment-chip';
+      if (attachment.kind === 'image' && attachment.dataUrl) {
+        const thumb = document.createElement('img');
+        thumb.src = attachment.dataUrl;
+        thumb.alt = attachment.name;
+        chip.appendChild(thumb);
+      } else {
+        const icon = document.createElement('span');
+        icon.className = 'attachment-icon';
+        icon.textContent = '📄';
+        chip.appendChild(icon);
+      }
+      const name = document.createElement('span');
+      name.className = 'attachment-name';
+      name.textContent = attachment.name;
+      name.title = attachment.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'attachment-remove';
+      remove.setAttribute('aria-label', I18nService.t('btn.removeAttachment'));
+      remove.textContent = '×';
+      remove.addEventListener('click', () => {
+        this.pendingAttachments = this.pendingAttachments.filter(a => a.id !== attachment.id);
+        this.renderAttachmentBar();
+      });
+      chip.append(name, remove);
+      this.attachmentBar.appendChild(chip);
+    }
+    this.attachmentBar.classList.toggle('hidden', this.pendingAttachments.length === 0);
+  }
+
   /**
    * Auto-fetch models if baseUrl and apiKey are already configured.
    * A manually configured model list takes precedence: the dropdown is
@@ -1447,6 +1812,9 @@ class SidePanelController {
     this.previewCloseBtn = document.getElementById('preview-close') as HTMLButtonElement;
     this.quoteBar = document.getElementById('quote-bar')!;
     this.quoteText = document.getElementById('quote-text')!;
+    this.attachmentBar = document.getElementById('attachment-bar')!;
+    this.attachBtn = document.getElementById('attach-btn') as HTMLButtonElement;
+    this.fileInput = document.getElementById('file-input') as HTMLInputElement;
   }
 
   /**
@@ -1539,6 +1907,30 @@ class SidePanelController {
         this.clearQuote();
         void this.autoFetchCurrentPage();
       });
+
+    // Attachments: paste into the composer, drag & drop, file picker
+    this.messageInput.addEventListener('paste', (event) => {
+      const files = filesFromDataTransfer(event.clipboardData);
+      if (files.length > 0) {
+        event.preventDefault();
+        void this.addAttachmentFiles(files);
+      }
+    });
+    const dropTarget = document.querySelector('.input-container') as HTMLElement | null;
+    if (dropTarget) {
+      dropTarget.addEventListener('dragover', (event) => event.preventDefault());
+      dropTarget.addEventListener('drop', (event: DragEvent) => {
+        event.preventDefault();
+        const files = filesFromDataTransfer(event.dataTransfer);
+        if (files.length > 0) void this.addAttachmentFiles(files);
+      });
+    }
+    this.attachBtn.addEventListener('click', () => this.fileInput.click());
+    this.fileInput.addEventListener('change', () => {
+      const files = Array.from(this.fileInput.files || []);
+      this.fileInput.value = '';
+      if (files.length > 0) void this.addAttachmentFiles(files);
+    });
 
     // Quick action buttons
     const quickActions = document.querySelectorAll('.quick-action');
@@ -1774,12 +2166,16 @@ class SidePanelController {
       content,
       timestamp: Date.now(),
       context: this.quotedReply ? undefined : (this.currentContext || undefined),
-      quote: this.quotedReply || undefined
+      quote: this.quotedReply || undefined,
+      attachments: this.pendingAttachments.length > 0 ? [...this.pendingAttachments] : undefined
     };
 
     await this.addMessage(userMessage);
     this.messageInput.value = '';
     this.updateSendButton();
+    // Attachments are one-shot: they applied to this message only
+    this.pendingAttachments = [];
+    this.renderAttachmentBar();
     // The quote is one-shot: it applied to this message only. Bring the
     // page reference back for the next question.
     if (userMessage.quote) {
@@ -1907,7 +2303,7 @@ class SidePanelController {
       timestamp: Date.now()
     };
 
-    const { messageEl, contentEl } = this.buildMessageElement(assistantMessage);
+    const { messageEl, contentEl, reasoningEl, reasoningBody } = this.buildMessageElement(assistantMessage);
     this.chatMessages.appendChild(messageEl);
 
     const typingIndicator = document.createElement('span');
@@ -1924,10 +2320,20 @@ class SidePanelController {
 
     try {
       const response = await this.apiService!.chat(apiMessages, {
+        onReasoning: (delta) => {
+          // Show the thinking block expanded while the model reasons
+          reasoningEl.hidden = false;
+          reasoningEl.open = true;
+          assistantMessage.reasoning = (assistantMessage.reasoning || '') + delta;
+          reasoningBody.textContent = assistantMessage.reasoning;
+          this.scrollToBottom();
+        },
         onContent: (delta) => {
           if (!contentStarted) {
             contentStarted = true;
             contentEl.replaceChildren();
+            // The answer began — fold the thinking away (expandable again)
+            reasoningEl.open = false;
           }
           assistantMessage.content += delta;
           contentEl.innerHTML = renderMarkdown(assistantMessage.content);
@@ -1937,7 +2343,12 @@ class SidePanelController {
 
       // Reconcile with the final aggregated result
       assistantMessage.content = response.content || assistantMessage.content;
+      assistantMessage.reasoning = response.reasoning || assistantMessage.reasoning;
       contentEl.innerHTML = renderMarkdown(assistantMessage.content);
+      if (assistantMessage.reasoning) {
+        reasoningEl.hidden = false;
+        reasoningBody.textContent = assistantMessage.reasoning;
+      }
 
       this.messages.push(assistantMessage);
       await this.saveChatHistory();
@@ -1981,22 +2392,25 @@ class SidePanelController {
       });
     }
 
-    // Add recent conversation history (last 10 messages)
+    // Add recent conversation history (last 10 messages), with their text
+    // attachments inlined into the prompt
     const recentMessages = this.messages
       .slice(0, -1)
       .filter(message => message.role === 'user' || message.role === 'assistant')
-      .slice(-10);
+      .slice(-10)
+      .map(message => ({ ...message, content: withAttachmentText(message) }));
     messages.push(...recentMessages);
 
     // Add current user message as user role only. A pending quote is
     // prepended as clearly delimited reference material, not mixed into
     // the question itself.
+    const currentText = withAttachmentText(userMessage);
     messages.push({
       id: this.generateId(),
       role: 'user',
       content: userMessage.quote
-        ? `The user is quoting part of an earlier reply and asking about it.\n\n=== QUOTED REPLY ===\n${userMessage.quote}\n=== END OF QUOTE ===\n\n${userMessage.content}`
-        : userMessage.content,
+        ? `The user is quoting part of an earlier reply and asking about it.\n\n=== QUOTED REPLY ===\n${userMessage.quote}\n=== END OF QUOTE ===\n\n${currentText}`
+        : currentText,
       timestamp: Date.now()
     });
 
@@ -2161,11 +2575,18 @@ Instructions:
 
     bubble.appendChild(header);
 
-    const placeholder = document.createElement('details');
-    placeholder.style.display = 'none';
-    const dummyReasoning = document.createElement('div');
-    placeholder.appendChild(dummyReasoning);
-    bubble.appendChild(placeholder);
+    // Collapsible reasoning ("thinking") block, shown above the content.
+    // Hidden until reasoning arrives; pre-populated for history messages.
+    const reasoningEl = document.createElement('details');
+    reasoningEl.className = 'message-reasoning';
+    reasoningEl.hidden = !message.reasoning;
+    const reasoningSummary = document.createElement('summary');
+    reasoningSummary.textContent = I18nService.t('reasoning.title');
+    const reasoningBody = document.createElement('div');
+    reasoningBody.className = 'reasoning-body';
+    reasoningBody.textContent = message.reasoning || '';
+    reasoningEl.append(reasoningSummary, reasoningBody);
+    bubble.appendChild(reasoningEl);
 
     const content = document.createElement('div');
     content.className = 'message-content';
@@ -2177,6 +2598,28 @@ Instructions:
     }
 
     bubble.appendChild(content);
+
+    // Attached files: image thumbnails and text-file chips
+    if (message.attachments && message.attachments.length > 0) {
+      const wrap = document.createElement('div');
+      wrap.className = 'message-attachments';
+      for (const attachment of message.attachments) {
+        if (attachment.kind === 'image' && attachment.dataUrl) {
+          const thumb = document.createElement('img');
+          thumb.className = 'msg-attachment-thumb';
+          thumb.src = attachment.dataUrl;
+          thumb.alt = attachment.name;
+          wrap.appendChild(thumb);
+        } else {
+          const chip = document.createElement('span');
+          chip.className = 'msg-attachment-chip';
+          chip.textContent = `📄 ${attachment.name}`;
+          chip.title = attachment.name;
+          wrap.appendChild(chip);
+        }
+      }
+      bubble.appendChild(wrap);
+    }
 
     // Action row (quote + copy) sits below the reply, not in the header
     if (actions) {
@@ -2228,7 +2671,7 @@ Instructions:
 
     messageEl.appendChild(bubble);
 
-    return { messageEl, contentEl: content, reasoningEl: placeholder as unknown as HTMLDetailsElement, reasoningBody: dummyReasoning };
+    return { messageEl, contentEl: content, reasoningEl, reasoningBody };
   }
 
   /**
@@ -2255,6 +2698,8 @@ Instructions:
     this.currentContext = null;
     this.contextDismissed = false;
     this.clearQuote();
+    this.pendingAttachments = [];
+    this.renderAttachmentBar();
     this.messageInput.placeholder = I18nService.t('app.placeholder');
 
     // Show current page in preview bar

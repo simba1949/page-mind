@@ -69,6 +69,36 @@ describe('renderMarkdown', () => {
       const html = renderMarkdown('[x](javascript:alert(1))');
       expect(html).not.toContain('href="javascript');
     });
+
+    test('turns bare URLs into clickable links', () => {
+      const html = renderMarkdown('详见 https://example.com/docs 页面');
+      expect(html).toContain('<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer">https://example.com/docs</a>');
+    });
+
+    test('keeps trailing punctuation outside bare links', () => {
+      const html = renderMarkdown('看这个 https://example.com/a。 以及 (https://example.com/b).');
+      expect(html).toContain('href="https://example.com/a"');
+      expect(html).not.toContain('href="https://example.com/a。');
+      expect(html).toContain('href="https://example.com/b"');
+      expect(html).not.toContain('href="https://example.com/b).');
+    });
+
+    test('stops bare URLs at full-width brackets without swallowing prose', () => {
+      const html = renderMarkdown('快捷安装（https://example.com/quick）也可以。');
+      expect(html).toContain('<a href="https://example.com/quick"');
+      expect(html).not.toContain('quick）');
+    });
+
+    test('leaves URLs inside code spans as text', () => {
+      const html = renderMarkdown('`https://example.com/inline`');
+      expect(html).not.toContain('href=');
+    });
+
+    test('does not corrupt underscores inside link URLs', () => {
+      const html = renderMarkdown('[docs](https://example.com/__init__/guide)');
+      expect(html).toContain('<a href="https://example.com/__init__/guide"');
+      expect(html).not.toContain('<strong>');
+    });
   });
 
   describe('lists', () => {

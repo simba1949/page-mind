@@ -22,7 +22,9 @@
   --accent-warm: #E5A14A;
   --accent-warm-light: rgba(229, 161, 74, 0.12);
   --accent-blue: #4A9EFF;
+  --accent-blue-deep: #3B8AE8;
   --accent-blue-light: rgba(74, 158, 255, 0.1);
+  --accent-blue-glow: rgba(74, 158, 255, 0.28);
   --accent-green: #34D399;
   --accent-green-light: rgba(52, 211, 153, 0.1);
 
@@ -71,12 +73,17 @@
      user bubble sits beside white AI bubbles as one family */
   --user-msg-start: rgba(37, 99, 235, 0.13);
   --user-msg-end: rgba(30, 79, 156, 0.08);
-  --user-msg-text: #1e4f9c;
-  --user-msg-border: rgba(37, 99, 235, 0.24);
+  --user-msg-text: #1d4ed8;
+  --user-msg-border: rgba(59, 130, 246, 0.28);
   --accent-warm: #c9781d;
   --accent-warm-light: rgba(201, 120, 29, 0.1);
-  --accent-blue: #2563a7;
-  --accent-blue-light: rgba(37, 99, 167, 0.08);
+  /* One blue family for the light theme: bright interactive blue
+     (buttons, focus, links), one step deeper for hover, one deeper still
+     for text-on-tint — instead of mixed navy/bright/mid blues */
+  --accent-blue: #3B82F6;
+  --accent-blue-deep: #2563EB;
+  --accent-blue-light: rgba(59, 130, 246, 0.1);
+  --accent-blue-glow: rgba(59, 130, 246, 0.24);
   --accent-green: #16865d;
   --accent-green-light: rgba(22, 134, 93, 0.08);
   --text-primary: #152033;
@@ -205,7 +212,7 @@ body {
 
 .model-select:focus {
   outline: none;
-  border-color: var(--accent-warm);
+  border-color: var(--accent-blue);
 }
 
 .model-select:focus-visible,
@@ -317,8 +324,8 @@ body {
 .welcome-icon {
   width: 64px;
   height: 64px;
-  background: var(--accent-warm-light);
-  border: 1px solid var(--border-accent);
+  background: var(--accent-blue-light);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
@@ -425,6 +432,35 @@ body {
   white-space: pre-wrap;
 }
 
+/* Collapsible reasoning ("thinking") block above assistant content */
+.message-reasoning {
+  margin-bottom: var(--space-sm);
+  padding-left: 10px;
+  border-left: 2px solid var(--border-default);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.message-reasoning summary {
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.message-reasoning summary:hover {
+  color: var(--text-secondary);
+}
+
+.message-reasoning .reasoning-body {
+  margin-top: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 /* ========================================
    Rendered Markdown (assistant messages)
    ======================================== */
@@ -526,6 +562,25 @@ body {
 .markdown-body .md-table th {
   background: var(--bg-surface-hover);
   font-weight: 600;
+}
+
+/* Code inside table cells must not push the table apart: constrain the
+   block, let it scroll horizontally inside the cell, and let inline code
+   wrap instead of stretching the column. */
+.markdown-body .md-table .md-pre-wrap {
+  max-width: 100%;
+  margin: 2px 0;
+}
+
+.markdown-body .md-table .md-pre {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+}
+
+.markdown-body .md-table .md-code {
+  white-space: normal;
+  word-break: break-all;
 }
 
 .markdown-body hr.md-hr {
@@ -737,15 +792,15 @@ body {
   width: 20px;
   height: 20px;
   border-radius: 4px;
-  background: var(--accent-warm-light);
-  color: var(--accent-warm);
+  background: var(--accent-blue-light);
+  color: var(--accent-blue);
   font-size: 11px;
   flex-shrink: 0;
   transition: all 0.15s ease;
 }
 
 .quick-action:hover .quick-action-icon {
-  background: var(--accent-warm);
+  background: var(--accent-blue);
   color: #fff;
 }
 
@@ -853,6 +908,119 @@ body {
   color: var(--text-primary);
 }
 
+/* ========================================
+   Attachments
+   ======================================== */
+
+.attachment-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-default);
+}
+
+.attachment-bar.hidden {
+  display: none;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  max-width: 170px;
+}
+
+.attachment-chip img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.attachment-chip .attachment-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.attachment-chip .attachment-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-remove {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.attachment-remove:hover {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+.attach-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.attach-btn:hover {
+  color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  background: var(--accent-blue-light);
+}
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.msg-attachment-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.msg-attachment-chip {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+}
+
 /* "Grant site access" button shown in the preview bar when page capture
    failed for lack of the standing host permission */
 .preview-authorize {
@@ -897,8 +1065,8 @@ body {
 
 #message-input:focus {
   outline: none;
-  border-color: var(--accent-warm);
-  box-shadow: 0 0 0 3px var(--accent-warm-light);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px var(--accent-blue-light);
 }
 
 #message-input::placeholder {
@@ -908,8 +1076,9 @@ body {
 .send-btn {
   width: 48px;
   height: 48px;
+  flex-shrink: 0;
   border: none;
-  background: linear-gradient(135deg, var(--accent-warm), #D4913A);
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-blue-deep));
   color: white;
   border-radius: var(--radius-md);
   cursor: pointer;
@@ -917,12 +1086,12 @@ body {
   align-items: center;
   justify-content: center;
   transition: all 0.15s ease;
-  box-shadow: 0 2px 12px rgba(229, 161, 74, 0.3);
+  box-shadow: 0 2px 12px var(--accent-blue-glow);
 }
 
 .send-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(229, 161, 74, 0.4);
+  box-shadow: 0 4px 16px var(--accent-blue-glow);
 }
 
 .send-btn:active:not(:disabled) {
@@ -934,6 +1103,21 @@ body {
   color: var(--text-muted);
   cursor: not-allowed;
   box-shadow: none;
+}
+
+/* Light theme: the deep blue gradient + colored glow reads heavy on a
+   pastel page — a flat accent button with neutral shadows keeps the
+   composer soft and consistent with the rest of the theme. :not(:disabled)
+   is required so the idle (empty) state still falls through to the muted
+   disabled style below. */
+:root[data-theme="light"] .send-btn:not(:disabled) {
+  background: var(--accent-blue);
+  box-shadow: var(--shadow-sm);
+}
+
+:root[data-theme="light"] .send-btn:hover:not(:disabled) {
+  background: var(--accent-blue-deep);
+  box-shadow: var(--shadow-md);
 }
 
 .composer-meta {
@@ -1044,8 +1228,8 @@ body {
 .setting-group input:focus,
 .setting-group select:focus {
   outline: none;
-  border-color: var(--accent-warm);
-  box-shadow: 0 0 0 2px var(--accent-warm-light);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px var(--accent-blue-light);
 }
 
 .help-text {
