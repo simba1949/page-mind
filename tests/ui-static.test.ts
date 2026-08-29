@@ -76,6 +76,63 @@ describe('manifest.json: least-privilege permission surface', () => {
   });
 });
 
+describe('sidepanel.ts: startup context capture', () => {
+  const ts = readFileSync(join(root, 'src', 'sidepanel', 'sidepanel.ts'), 'utf8');
+
+  test('first open prefers the user selection, later restores do not', () => {
+    // Bug this pins: opening the panel after selecting text used to show the
+    // full page instead of the selection. Startup must pass preferSelection;
+    // the dismiss/quote-cancel restore paths must NOT (a stale selection
+    // would resurrect a reference the user removed).
+    expect(ts).toContain('await this.autoFetchCurrentPage(true);');
+    const bareCalls = ts.match(/this\.autoFetchCurrentPage\(\)/g) ?? [];
+    expect(bareCalls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  test('the startup selection probe has its own failure guard', () => {
+    // A rejected GET_SELECTION must not skip the full-page fallback below it.
+    const at = ts.indexOf('private async autoFetchCurrentPage');
+    expect(at).toBeGreaterThan(-1);
+    const body = ts.slice(at, ts.indexOf('\n  /**', at));
+    expect(body).toContain("type: 'GET_SELECTION'");
+    expect(body).toMatch(/try \{\s*\n\s*const selectionResponse[\s\S]*?\} catch \{/);
+  });
+});
+
+describe('context-menu handoff: storage is the reliable channel', () => {
+  const bg = readFileSync(join(root, 'src', 'background', 'service-worker.ts'), 'utf8');
+  const panel = readFileSync(join(root, 'src', 'sidepanel', 'sidepanel.ts'), 'utf8');
+
+  test('an unreachable panel downgrades to a warning, not an error', () => {
+    // "Receiving end does not exist" is EXPECTED while the panel is still
+    // opening; the stored context covers it. It must not surface as an error.
+    const at = bg.indexOf("type: 'CONTEXT_FROM_MENU'");
+    expect(at).toBeGreaterThan(-1);
+    const after = bg.slice(at, at + 400);
+    expect(after).toContain('console.warn');
+    expect(after).not.toContain('console.error');
+  });
+
+  test('the background saves the selection before trying to notify', () => {
+    // Ordering matters: the panel reads contextSelection during startup, so
+    // the write must precede the (possibly failing) sendMessage.
+    const save = bg.indexOf("save('contextSelection'");
+    const send = bg.indexOf("type: 'CONTEXT_FROM_MENU'");
+    expect(save).toBeGreaterThan(-1);
+    expect(send).toBeGreaterThan(-1);
+    expect(save).toBeLessThan(send);
+  });
+
+  test('a live menu message clears the stored copy', () => {
+    // Otherwise the next panel startup resurrects a stale selection via
+    // checkPendingContext after the live path already applied it.
+    const at = panel.indexOf('private handleContextFromMenu');
+    expect(at).toBeGreaterThan(-1);
+    const body = panel.slice(at, panel.indexOf('\n  /**', at));
+    expect(body).toContain("chrome.storage.local.remove('contextSelection')");
+  });
+});
+
 describe('index.html: composer and settings markup hygiene', () => {
   test('loads exactly one script, as an external module', () => {
     expect(html.split('<script').length - 1).toBe(1);

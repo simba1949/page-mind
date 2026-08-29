@@ -399,23 +399,29 @@ class BackgroundService {
           this.openSidePanel(tab.id);
         }
 
-        // Delay required: openSidePanel must be called synchronously within the
-        // click handler (user gesture), but the storage write + messaging can
-        // happen asynchronously after the panel opens.
-        setTimeout(async () => {
+        void (async () => {
           try {
-            // Store the selected text temporarily
+            // Store the selected text temporarily. This is the reliable
+            // channel: a panel that opens right now reads it in
+            // checkPendingContext during startup.
             await BackgroundStorageService.save('contextSelection', contextData);
 
-            // Send message to side panel to notify new context
+            // Live notification for a panel that is already open — the panel
+            // does not watch storage events, so without this a menu selection
+            // while the panel is open would never appear. A rejected send
+            // only means no panel is listening yet; the stored context above
+            // covers that case.
             await chrome.runtime.sendMessage({
               type: 'CONTEXT_FROM_MENU',
               data: contextData
             });
           } catch (error) {
-            console.error('Failed to save/send context:', error);
+            // Expected while the panel is still starting up (or closed):
+            // "Could not establish connection. Receiving end does not exist."
+            // The panel picks the selection up from storage instead.
+            console.warn('Context menu: panel not reachable yet, using stored context:', error);
           }
-        }, 100);
+        })();
       }
     });
   }

@@ -1575,28 +1575,57 @@ class SidePanelController {
     } else {
       // Auto-fetch models and current page only if credentials exist
       await this.autoFetchModels();
-      await this.autoFetchCurrentPage();
+      // First open: honor a selection made before the panel was opened.
+      await this.autoFetchCurrentPage(true);
     }
   }
 
   /**
-   * Auto-fetch current page and show in preview bar
+   * Auto-fetch current page and show in preview bar.
+   * On first open (`preferSelection`), a selection the user made before
+   * clicking the extension icon becomes the reference instead of the full
+   * page — the page's selection is still readable from the panel. Later
+   * refreshes deliberately skip this: a lingering old selection must not
+   * resurrect a reference the user has since dismissed or replaced.
    */
-  private async autoFetchCurrentPage(): Promise<void> {
+  private async autoFetchCurrentPage(preferSelection = false): Promise<void> {
     // Suppressed while a quote is pending — the quote is the reference
     try {
       if (this.quotedReply) return;
-      // Try to get page content directly - permissions should already be granted
-      const response = await chrome.runtime.sendMessage({
-        type: 'GET_PAGE_CONTENT'
-      });
+      let context: PageContext | null = null;
 
-      const context = sanitizePageContext(response.data);
-      if (response.success && context) {
+      if (preferSelection) {
+        try {
+          const selectionResponse = await chrome.runtime.sendMessage({
+            type: 'GET_SELECTION'
+          });
+          const selection = sanitizePageContext(selectionResponse?.data);
+          if (selectionResponse?.success && selection?.content) {
+            context = selection;
+          }
+        } catch {
+          // Selection probe failed (non-injectable page, worker asleep) —
+          // the full-page fetch below still applies.
+        }
+      }
+
+      if (!context) {
+        // Try to get page content directly - permissions should already be granted
+        const response = await chrome.runtime.sendMessage({
+          type: 'GET_PAGE_CONTENT'
+        });
+        context = response.success ? sanitizePageContext(response.data) : null;
+      }
+
+      if (context) {
         this.currentContext = context;
         this.contextDismissed = false;
-        // Show page preview in the bar above input
-        this.showPagePreviewBar(context.title);
+        if (context.type === 'selection') {
+          this.showSelectionBar(context.content);
+        } else {
+          // Show page preview in the bar above input
+          this.showPagePreviewBar(context.title);
+        }
       } else {
         // Nothing readable: either the tab isn't a web page, or site access
         // isn't granted. Only the latter is fixable — offer it once.
@@ -2008,6 +2037,10 @@ class SidePanelController {
   private handleContextFromMenu(contextData: any): void {
     const context = sanitizePageContext(contextData);
     if (!context) return;
+    // The live message consumed the handoff — remove the storage copy the
+    // background saved alongside it, or the next panel startup would
+    // resurrect this stale selection via checkPendingContext.
+    void chrome.storage.local.remove('contextSelection').catch(() => {});
     // An explicitly selected text replaces a pending quote — only one
     // reference can be active at a time
     this.clearQuote();

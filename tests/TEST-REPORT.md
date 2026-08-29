@@ -1,8 +1,8 @@
 # 页知 (PageMind) 测试报告
 
-- **日期**: 2026-08-28（第 3 轮，覆盖「附件上传/粘贴、引用、思考过程、链接、主题和谐」整批未提交改动）
+- **日期**: 2026-08-28（第 3 轮，覆盖「附件上传/粘贴、引用、思考过程、链接、主题和谐、启动选区引用」整批未提交改动）
 - **执行方式**: `npm test`（jest）、`npm run test:types` + `npm run lint`（两套 tsc 全量类型检查）、`npm run build`
-- **结果**: ✅ **9 个测试套件、101 个用例全部通过**，两套类型检查零错误，构建成功
+- **结果**: ✅ **9 个测试套件、106 个用例全部通过**，两套类型检查零错误，构建成功
 - **安全专项**: 见 [SECURITY-REPORT.md](./SECURITY-REPORT.md)
 
 ## 一、结果总览
@@ -10,7 +10,7 @@
 | 指标 | 结果 |
 |---|---|
 | 测试套件 | 9 passed / 9 total |
-| 测试用例 | 101 passed / 101 total（上一轮 61，**本轮 +40**） |
+| 测试用例 | 106 passed / 106 total（上一轮 61，**本轮 +45**） |
 | 用时 | ~0.7s |
 | `tsc -p tsconfig.test.json`（含 tests） | 0 错误 |
 | `tsc --noEmit`（构建配置） | 0 错误 |
@@ -24,15 +24,17 @@
 | `markdown.test.ts` | 25 | 渲染器全量：代码块/标题/行内格式/列表/引用/表格/分隔线/段落、表格→Markdown 还原、裸 URL 链接化（含中文标点边界）、**无分隔行表格降级为段落（防卡死回归）** |
 | `security.test.ts` 🆕 | 18 | 安全专项：各块类型 XSS 注入、危险协议链接、属性逃逸、锚点安全属性、占位符不泄漏 |
 | `attachments.test.ts` | 16 | 附件分类（图片/文本/未知二进制拒收）、提示词包裹、`sanitizeAttachments` 历史净化（7 例）、`filesFromDataTransfer` 粘贴/拖拽提取（3 例） |
-| `ui-static.test.ts` 🆕 | 12 | 静态回归：浅色主题发送按钮禁用态优先级、按钮同尺寸、蓝色家族统一、manifest 权限最小化、HTML 无内联脚本/内联事件处理器 |
+| `ui-static.test.ts` 🆕 | 17 | 静态回归：浅色主题发送按钮禁用态优先级、按钮同尺寸、蓝色家族统一、manifest 权限最小化、HTML 无内联脚本/内联事件处理器、**启动引用优先选区（回归钉）**、**右键菜单→面板交接（存储先行 + warn 降级 + 清副本）** |
 | `sidepanel-helpers.test.ts` | 11 | 自定义模型解析（4）+ 思考过程分离 `stripThinkTags`（4）+ 流式思考分隔器 `createThinkSeparator`（3，含标签跨分片切断） |
 | `storage.test.ts` | 8 | 设置合并/兜底、密钥 session 隔离、历史 100 条裁剪 |
 | `api.test.ts` | 5 | 缺密钥拒绝、请求形状、错误消息、内容截断 |
 | `i18n.test.ts` | 4 | 中英切换、缺失回退、字典导出 |
 | `crypto.test.ts` | 2 | 密钥加解密往返、随机 IV |
 
-### 本轮新增用例（+40）对应改动
+### 本轮新增用例（+45）对应改动
 
+0. **启动引用 bug**（`ui-static.test.ts` +2）：修复「未打开页知时先选中文字，打开后面板引用的是整页而非选区」。启动时改走 `autoFetchCurrentPage(true)`，优先探测 `GET_SELECTION`，无选区再退回整页；关闭引用条/取消引用等后续刷新仍传 `false`（陈旧的页面选区不应复活已被用户移除的引用）。两条静态用例分别钉住「启动传 preferSelection + 恢复路径不传」与「选区探测异常不阻断整页兜底」。
+0b. **右键菜单报错**（`ui-static.test.ts` +3）：修复「Failed to save/send context: Could not establish connection. Receiving end does not exist.」。根因是 `contextMenus.onClicked` 里先 `openSidePanel` 再 `sendMessage`，但面板此刻尚未加载完，接收端不存在 → 抛错。改为**存储先行**（`contextSelection` 落盘是可靠通道，面板启动经 `checkPendingContext` 读取），`sendMessage` 仅作面板已开时的实时通知，失败降级为 `console.warn`；并去掉原先 100ms `setTimeout` 竞态。面板消费实时消息后 `remove('contextSelection')`，防下次启动复活陈旧选区。三条用例分别钉住「warn 非 error」「save 在 send 之前」「live 路径清副本」。
 1. **附件功能**（`attachments.test.ts` +10）：`sanitizeAttachments` 验证持久化历史不可塞入非 `data:image/` 图片（本轮顺手加固：修复前远程 URL 可作为 `img.src` 被加载）、字段截断上限（name 200 / mime 100 / dataUrl 3MB / text 64k）、最多 4 个附件、坏形状条目丢弃；`filesFromDataTransfer` 只取 `kind === 'file'` 条目、空事件安全。
 2. **安全专项**（`security.test.ts` 🆕 18）：见安全报告第三节。
 3. **UI/权限静态回归**（`ui-static.test.ts` 🆕 12）：本两轮主题修复中真实发生过的 CSS 优先级 bug（`:root[data-theme="light"] .send-btn` 压过 `.send-btn:disabled`，导致空输入时按钮亮蓝）现在有回归测试钉住 `:not(:disabled)` 写法；attach/send 48px 同尺寸、快捷按钮与欢迎图标蓝色家族（禁 `--accent-warm` 回潮）；manifest 权限清单锁死为最小集合、`<all_urls>` 只能出现在 optional；页面无内联脚本与内联事件处理器、输入长度上限、密码框 `autocomplete="new-password"`、文件选择器不含原生可执行文件。
