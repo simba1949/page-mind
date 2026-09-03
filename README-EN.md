@@ -80,6 +80,8 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 
 ### First-time setup
 
+Version 0.1.1 uses a new storage contract and does not migrate settings from older versions. After upgrading, enter your API key again; by default it is kept only for the current browser session.
+
 1. Click the PageMind icon in the toolbar to open the side panel.
 2. Click the **Settings** (gear) icon.
 3. Select **API Format** (OpenAI-compatible or Anthropic-compatible).

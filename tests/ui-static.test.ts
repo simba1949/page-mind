@@ -57,6 +57,10 @@ describe('styles.css: light theme keeps a single accent family', () => {
 });
 
 describe('manifest.json: least-privilege permission surface', () => {
+  test('uses the 0.1.1 storage/module contract', () => {
+    expect(manifest.version).toBe('0.1.1');
+  });
+
   test('requests exactly the expected permissions', () => {
     expect([...manifest.permissions].sort()).toEqual([
       'activeTab', 'contextMenus', 'scripting', 'sidePanel',
@@ -135,6 +139,11 @@ describe('context-menu handoff: storage is the reliable channel', () => {
 });
 
 describe('index.html: composer and settings markup hygiene', () => {
+  test('uses explicit extensions for MV3 runtime imports', () => {
+    expect(sidepanelTs).toContain("from '../utils/crypto.js'");
+    expect(sidepanelTs).not.toContain("from '../utils/crypto';");
+  });
+
   test('loads exactly one script, as an external module', () => {
     expect(html.split('<script').length - 1).toBe(1);
     expect(html).toContain('<script type="module" src="sidepanel.js"></script>');
@@ -182,5 +191,11 @@ describe('index.html: composer and settings markup hygiene', () => {
         expect(token).not.toBe(ext);
       }
     }
+  });
+
+  test('the file picker excludes active SVG content', () => {
+    expect(html).not.toContain('image/*');
+    expect(html).not.toContain('.svg');
+    expect(html).toContain('image/png');
   });
 });

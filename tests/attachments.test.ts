@@ -13,6 +13,11 @@ describe('classifyFile', () => {
     expect(classifyFile('photo.JPG', '')).toBe('image');
   });
 
+  test('rejects SVG and unsupported image MIME types', () => {
+    expect(classifyFile('icon.svg', 'image/svg+xml')).toBeNull();
+    expect(classifyFile('icon', 'image/svg+xml')).toBeNull();
+  });
+
   test('recognizes text files by mime type and by extension', () => {
     expect(classifyFile('notes', 'text/plain')).toBe('text');
     expect(classifyFile('data.json', 'application/json')).toBe('text');
@@ -77,6 +82,12 @@ describe('sanitizeAttachments', () => {
     expect(sanitizeAttachments([remote, htmlData, scripty])).toBeUndefined();
   });
 
+  test('drops SVG data URLs and malformed base64 payloads', () => {
+    const svg = { ...image, dataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' };
+    const malformed = { ...image, dataUrl: 'data:image/png;base64,not valid base64!' };
+    expect(sanitizeAttachments([svg, malformed])).toBeUndefined();
+  });
+
   test('drops entries missing their payload and non-object elements', () => {
     const noDataUrl = { id: '1', kind: 'image', name: 'a.png', mime: 'image/png' };
     const noText = { id: '2', kind: 'text', name: 'a.txt', mime: 'text/plain' };
@@ -99,12 +110,12 @@ describe('sanitizeAttachments', () => {
     expect(sanitizeAttachments([bigImage])?.[0].dataUrl).toHaveLength(3_000_000);
   });
 
-  test('normalizes missing metadata and unknown kinds', () => {
+  test('normalizes missing metadata and drops unknown kinds', () => {
     const bare = sanitizeAttachments([{ kind: 'text', text: 'hi' }]);
     expect(bare?.[0]).toMatchObject({ id: '', name: 'file', mime: '', text: 'hi' });
 
     const unknown = sanitizeAttachments([{ kind: 'binary', text: 'x' }]);
-    expect(unknown?.[0].kind).toBe('text');
+    expect(unknown).toBeUndefined();
   });
 });
 

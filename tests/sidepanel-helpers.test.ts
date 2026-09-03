@@ -1,10 +1,46 @@
 import {
   createThinkSeparator,
+  endpointOriginPattern,
   modelOmitsTemperature,
   openAICompatibleErrorMessage,
   parseCustomModels,
+  sanitizeAppSettings,
   stripThinkTags
 } from '../src/sidepanel/sidepanel';
+
+describe('sanitizeAppSettings', () => {
+  test('normalizes malformed persisted values to safe defaults', () => {
+    const settings = sanitizeAppSettings({
+      api: {
+        provider: 'unknown',
+        baseUrl: 'javascript:alert(1)',
+        model: '  safe-model  ',
+        customModels: [' m1 ', 42, 'm1', 'm2']
+      },
+      language: 'fr',
+      theme: 'neon',
+      rememberApiKey: 'yes'
+    });
+
+    expect(settings.api.provider).toBe('openai');
+    expect(settings.api.baseUrl).toBe('https://api.openai.com/v1');
+    expect(settings.api.model).toBe('safe-model');
+    expect(settings.api.customModels).toEqual(['m1', 'm2']);
+    expect(settings.language).toBe('en');
+    expect(settings.theme).toBe('auto');
+    expect(settings.rememberApiKey).toBe(false);
+  });
+});
+
+describe('endpointOriginPattern', () => {
+  test('keeps a custom port and excludes URL credentials or paths', () => {
+    expect(endpointOriginPattern('https://gateway.example:8443/v1')).toBe('https://gateway.example:8443/*');
+  });
+
+  test('supports localhost endpoints without widening to every port', () => {
+    expect(endpointOriginPattern('http://localhost:3000/v1')).toBe('http://localhost:3000/*');
+  });
+});
 
 describe('openAICompatibleErrorMessage', () => {
   test('explains that a 401 requires checking the API key', () => {
@@ -16,6 +52,15 @@ describe('openAICompatibleErrorMessage', () => {
 
   test('keeps the existing gateway guidance for server errors', () => {
     expect(openAICompatibleErrorMessage(503)).toContain('网关或该模型渠道暂时不可用');
+  });
+
+  test('bounds and removes control characters from upstream details', () => {
+    const detail = `${'x'.repeat(600)}\u0000\n`;
+    const message = openAICompatibleErrorMessage(401, detail);
+
+    expect(message).not.toContain('\u0000');
+    expect(message).not.toContain('\n');
+    expect(message.length).toBeLessThan(700);
   });
 });
 

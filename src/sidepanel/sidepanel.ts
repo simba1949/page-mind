@@ -1,6 +1,9 @@
+// Browser ES modules require an explicit extension in MV3 pages.
+import { CryptoService } from '../utils/crypto.js';
+
 /**
- * Self-contained side panel controller for the AI assistant interface
- * All dependencies are inlined to avoid module import issues
+ * Side panel controller for the AI assistant interface.
+ * Runtime services stay local; credential encryption is shared with tests.
  */
 
 // Type definitions (simplified for self-contained usage)
@@ -30,12 +33,15 @@ interface MessageAttachment {
   text?: string;
 }
 
-const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const SAFE_IMAGE_MIME_RE = /^image\/(png|jpe?g|gif|webp|bmp)$/i;
+const SAFE_IMAGE_DATA_URL_RE = /^data:image\/(png|jpe?g|gif|webp|bmp);base64,[A-Za-z0-9+/]+={0,2}$/i;
 const TEXT_FILE_RE = /\.(txt|md|markdown|json|csv|log|xml|yml|yaml|ts|tsx|js|jsx|mjs|py|java|c|cpp|h|hpp|css|scss|html|htm|sql|sh|bat|ps1|go|rs|rb|php)$/i;
 
 /** Decide how a file can participate in a chat message. */
 export function classifyFile(name: string, mime: string): 'image' | 'text' | null {
-  if (mime.startsWith('image/')) return 'image';
+  if (SAFE_IMAGE_MIME_RE.test(mime)) return 'image';
+  if (mime.startsWith('image/')) return null;
   if (IMAGE_FILE_RE.test(name)) return 'image';
   if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml' ||
       mime === 'application/javascript' || mime === 'application/x-yaml') {
@@ -76,14 +82,17 @@ export function modelOmitsTemperature(model: string): boolean {
 
 /** Turn an OpenAI-compatible HTTP failure into an actionable user message. */
 export function openAICompatibleErrorMessage(status: number, detail?: string): string {
+  const safeDetail = typeof detail === 'string'
+    ? detail.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 500)
+    : '';
   if (status === 401) {
-    const upstreamDetail = detail ? `（上游返回：${detail}）` : '';
+    const upstreamDetail = safeDetail ? `（上游返回：${safeDetail}）` : '';
     return `HTTP 401：API Key 鉴权失败，请检查 API Key。${upstreamDetail}`;
   }
   if (status >= 500) {
-    return `HTTP ${status}：${detail || '服务端错误，可能是网关或该模型渠道暂时不可用，请稍后重试或更换模型'}`;
+    return `HTTP ${status}：${safeDetail || '服务端错误，可能是网关或该模型渠道暂时不可用，请稍后重试或更换模型'}`;
   }
-  return detail ? `HTTP ${status}：${detail}` : `HTTP ${status}`;
+  return safeDetail ? `HTTP ${status}：${safeDetail}` : `HTTP ${status}`;
 }
 
 /**
@@ -208,6 +217,10 @@ interface AppSettings {
   rememberApiKey: boolean;
 }
 
+function sanitizeApiKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, 1_000) : '';
+}
+
 function sanitizePageContext(value: unknown): PageContext | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Partial<PageContext>;
@@ -232,8 +245,8 @@ export function sanitizeAttachments(value: unknown): MessageAttachment[] | undef
   const cleaned = value
     .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object')
     .filter(a => a.kind === 'image'
-      ? typeof a.dataUrl === 'string' && a.dataUrl.startsWith('data:image/')
-      : typeof a.text === 'string')
+      ? typeof a.dataUrl === 'string' && SAFE_IMAGE_DATA_URL_RE.test(a.dataUrl)
+      : a.kind === 'text' && typeof a.text === 'string')
     .slice(0, LIMITS.MAX_ATTACHMENTS)
     .map(a => ({
       id: typeof a.id === 'string' ? a.id : '',
@@ -287,7 +300,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   language: 'zh', // 默认中文
   theme: 'auto',
-  rememberApiKey: true
+  rememberApiKey: false
 };
 
 // Storage keys
@@ -296,27 +309,134 @@ const STORAGE_KEYS = {
   CHAT_HISTORY: 'chat_history',
   CONVERSATIONS: 'conversations',
   ENCRYPTION_KEY: 'encryption_key',
-  SESSION_API_KEY: 'session_api_key'
+  SESSION_API_KEY: 'session_api_key',
+  SCHEMA_VERSION: 'settings_schema_version'
 } as const;
+const STORAGE_SCHEMA_VERSION = 1;
+const ENCRYPTED_API_KEY_PREFIX = 'enc:v1:';
+
+/** Normalize untrusted settings read from extension storage. */
+export function sanitizeAppSettings(value: unknown): AppSettings {
+  if (!value || typeof value !== 'object') {
+    return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api } };
+  }
+
+  const stored = value as Record<string, unknown>;
+  const rawApi = stored.api && typeof stored.api === 'object'
+    ? stored.api as Record<string, unknown>
+    : {};
+  const provider = rawApi.provider === 'anthropic' ? 'anthropic' : 'openai';
+  const rawBaseUrl = typeof rawApi.baseUrl === 'string' ? rawApi.baseUrl : '';
+  let baseUrl = DEFAULT_SETTINGS.api.baseUrl;
+  if (rawBaseUrl) {
+    try {
+      baseUrl = normalizeBaseUrl(rawBaseUrl);
+    } catch {
+      // Keep the safe default when persisted settings contain an invalid URL.
+    }
+  }
+
+  const customModels = Array.isArray(rawApi.customModels)
+    ? rawApi.customModels
+      .filter((model): model is string => typeof model === 'string')
+      .map(model => model.trim().slice(0, 200))
+      .filter(Boolean)
+      .filter((model, index, models) => models.indexOf(model) === index)
+      .slice(0, 100)
+    : undefined;
+  const maxTokens = typeof rawApi.maxTokens === 'number' && Number.isFinite(rawApi.maxTokens)
+    ? Math.min(32_000, Math.max(1, Math.round(rawApi.maxTokens)))
+    : DEFAULT_SETTINGS.api.maxTokens;
+  const temperature = typeof rawApi.temperature === 'number' && Number.isFinite(rawApi.temperature)
+    ? Math.min(2, Math.max(0, rawApi.temperature))
+    : DEFAULT_SETTINGS.api.temperature;
+  const language = stored.language === 'zh' ? 'zh' : 'en';
+  const theme = stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'auto';
+  const rememberApiKey = typeof stored.rememberApiKey === 'boolean'
+    ? stored.rememberApiKey
+    : DEFAULT_SETTINGS.rememberApiKey;
+
+  return {
+    api: {
+      ...DEFAULT_SETTINGS.api,
+      provider,
+      // Leave room for the encrypted representation (ciphertext + base64
+      // overhead) while still bounding untrusted storage input.
+      apiKey: typeof rawApi.apiKey === 'string' ? rawApi.apiKey.trim().slice(0, 4_096) : '',
+      model: typeof rawApi.model === 'string' && rawApi.model.trim()
+        ? rawApi.model.trim().slice(0, 200)
+        : DEFAULT_SETTINGS.api.model,
+      baseUrl,
+      ...(customModels ? { customModels } : {}),
+      maxTokens,
+      temperature
+    },
+    language,
+    theme,
+    rememberApiKey
+  };
+}
 
 // Storage service for managing application data
-class StorageService {
-  static async initialize(): Promise<void> {
-    // One-time migration for settings saved before the "remember key on this
-    // device" preference existed. Those keys were already persisted in
-    // chrome.storage.local, so keep behaving the same way for them.
+export class StorageService {
+  private static encryptionKeyPromise: Promise<CryptoKey> | null = null;
+
+  /** Reset pre-0.1.1 data; this release intentionally has no migration path. */
+  static async prepareStorage(): Promise<void> {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.SCHEMA_VERSION);
+    if (result[STORAGE_KEYS.SCHEMA_VERSION] === STORAGE_SCHEMA_VERSION) return;
+
+    await Promise.all([
+      chrome.storage.local.remove([
+        STORAGE_KEYS.SETTINGS,
+        STORAGE_KEYS.ENCRYPTION_KEY,
+        STORAGE_KEYS.SCHEMA_VERSION
+      ]),
+      chrome.storage.session.remove(STORAGE_KEYS.SESSION_API_KEY)
+    ]);
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION
+    });
+  }
+
+  private static getEncryptionKey(): Promise<CryptoKey> {
+    if (!this.encryptionKeyPromise) {
+      this.encryptionKeyPromise = (async () => {
+        const result = await chrome.storage.local.get(STORAGE_KEYS.ENCRYPTION_KEY);
+        const encodedKey = result[STORAGE_KEYS.ENCRYPTION_KEY];
+        if (typeof encodedKey === 'string' && encodedKey) {
+          try {
+            return await CryptoService.importKey(encodedKey);
+          } catch {
+            // Replace a corrupted key rather than repeatedly failing reads.
+          }
+        }
+
+        const key = await CryptoService.generateKey();
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.ENCRYPTION_KEY]: await CryptoService.exportKey(key)
+        });
+        return key;
+      })().finally(() => {
+        this.encryptionKeyPromise = null;
+      });
+    }
+    return this.encryptionKeyPromise;
+  }
+
+  private static async encryptApiKey(apiKey: string): Promise<string> {
+    const key = await this.getEncryptionKey();
+    return ENCRYPTED_API_KEY_PREFIX + await CryptoService.encrypt(apiKey, key);
+  }
+
+  private static async decryptApiKey(storedApiKey: string): Promise<string> {
+    if (!storedApiKey.startsWith(ENCRYPTED_API_KEY_PREFIX)) return '';
     try {
-      const localResult = await chrome.storage.local.get([STORAGE_KEYS.SETTINGS, STORAGE_KEYS.ENCRYPTION_KEY]);
-      const storedSettings = localResult[STORAGE_KEYS.SETTINGS] as AppSettings | undefined;
-
-      if (storedSettings && storedSettings.rememberApiKey === undefined) {
-        storedSettings.rememberApiKey = Boolean(storedSettings.api?.apiKey);
-        await chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: storedSettings });
-      }
-
-      await chrome.storage.local.remove(STORAGE_KEYS.ENCRYPTION_KEY);
-    } catch (error) {
-      console.error('Failed to initialize credential storage:', error);
+      const key = await this.getEncryptionKey();
+      return await CryptoService.decrypt(storedApiKey.slice(ENCRYPTED_API_KEY_PREFIX.length), key);
+    } catch {
+      // A stale/corrupt ciphertext must not prevent the side panel opening.
+      return '';
     }
   }
 
@@ -326,15 +446,14 @@ class StorageService {
         chrome.storage.local.get(STORAGE_KEYS.SETTINGS),
         chrome.storage.session.get(STORAGE_KEYS.SESSION_API_KEY)
       ]);
-      const stored = localResult[STORAGE_KEYS.SETTINGS] as AppSettings | undefined;
-      const settings: AppSettings = stored
-        ? { ...DEFAULT_SETTINGS, ...stored, api: { ...DEFAULT_SETTINGS.api, ...stored.api } }
-        : { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api } };
+      const settings = sanitizeAppSettings(localResult[STORAGE_KEYS.SETTINGS]);
 
-      // When the user hasn't opted in to remembering the key on this device,
-      // it only ever lives in session storage (cleared on browser restart).
-      if (!settings.rememberApiKey) {
-        settings.api.apiKey = String(sessionResult?.[STORAGE_KEYS.SESSION_API_KEY] || '');
+      if (settings.rememberApiKey) {
+        settings.api.apiKey = await this.decryptApiKey(settings.api.apiKey);
+      } else {
+        // When the user hasn't opted in to remembering the key on this device,
+        // it only ever lives in session storage (cleared on browser restart).
+        settings.api.apiKey = sanitizeApiKey(sessionResult?.[STORAGE_KEYS.SESSION_API_KEY]);
       }
 
       return settings;
@@ -346,16 +465,17 @@ class StorageService {
 
   static async saveSettings(settings: AppSettings): Promise<void> {
     try {
-      const apiKey = settings.api.apiKey.trim();
-      const remember = settings.rememberApiKey !== false;
+      const sanitized = sanitizeAppSettings(settings);
+      const apiKey = sanitized.api.apiKey.trim();
+      const remember = sanitized.rememberApiKey;
+      const storedApiKey = remember && apiKey ? await this.encryptApiKey(apiKey) : '';
 
       const settingsToSave: AppSettings = {
-        ...settings,
+        ...sanitized,
         rememberApiKey: remember,
-        // When remember=true: key is persisted in chrome.storage.local, no need for session storage
-        // When remember=false: key lives in chrome.storage.session only (cleared on browser restart),
-        //                      local storage stores an empty key
-        api: { ...settings.api, apiKey: remember ? apiKey : '' }
+        // Remembered keys are encrypted before entering persistent storage.
+        // Otherwise they stay in session storage only (cleared on restart).
+        api: { ...sanitized.api, apiKey: storedApiKey }
       };
 
       await Promise.all([
@@ -443,6 +563,12 @@ function normalizeBaseUrl(value: string): string {
   }
 
   return url.toString().replace(/\/+$/, '');
+}
+
+/** Build the narrowest Chrome origin pattern for a configured endpoint. */
+export function endpointOriginPattern(baseUrl: string): string {
+  const url = new URL(normalizeBaseUrl(baseUrl));
+  return `${url.protocol}//${url.host}/*`;
 }
 
 /**
@@ -814,8 +940,7 @@ export function tableToMarkdown(table: HTMLTableElement): string {
 }
 
 async function ensureEndpointPermission(baseUrl: string, requestPermission: boolean): Promise<boolean> {
-  const url = new URL(normalizeBaseUrl(baseUrl));
-  const origin = `${url.protocol}//${url.hostname}/*`;
+  const origin = endpointOriginPattern(baseUrl);
   const granted = await chrome.permissions.contains({ origins: [origin] });
   if (granted || !requestPermission) return granted;
   return chrome.permissions.request({ origins: [origin] });
@@ -912,6 +1037,7 @@ export function createThinkSeparator(
 class APIService {
   private config: APIConfig;
   private static readonly REQUEST_TIMEOUT_MS = 120_000;
+  private static readonly MAX_JSON_RESPONSE_BYTES = 4_000_000;
 
   constructor(config: APIConfig) {
     this.config = {
@@ -943,12 +1069,23 @@ class APIService {
    */
   private async parseJsonBody(response: Response): Promise<any> {
     const contentType = response.headers.get('content-type') || '';
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > APIService.MAX_JSON_RESPONSE_BYTES) {
+      throw new Error(I18nService.t('msg.responseTooLarge'));
+    }
     const body = await response.text();
+    if (body.length > APIService.MAX_JSON_RESPONSE_BYTES) {
+      throw new Error(I18nService.t('msg.responseTooLarge'));
+    }
     if (contentType.includes('text/html') || body.trimStart().startsWith('<')) {
       throw new Error(I18nService.t('msg.htmlResponse'));
     }
     try {
-      return JSON.parse(body);
+      const parsed = JSON.parse(body);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('JSON response must be an object');
+      }
+      return parsed;
     } catch {
       throw new Error(I18nService.t('msg.invalidJson'));
     }
@@ -1111,7 +1248,7 @@ class APIService {
       const detail = errorData.error?.message || errorData.message;
       // Keep the raw body in the console: gateways sometimes hide the real
       // upstream reason there even when the JSON error field is generic.
-      console.error(`Chat request failed (HTTP ${response.status}):`, errorText);
+      console.error(`Chat request failed (HTTP ${response.status}):`, errorText.slice(0, 2_000));
       // Always prefix the status so a gateway fault (5xx) is distinguishable
       // from a config/permission problem (4xx) at a glance.
       throw new Error(openAICompatibleErrorMessage(response.status, detail));
@@ -1427,6 +1564,7 @@ const translations = {
     'context.quote': 'Quote',
     'msg.htmlResponse': 'The endpoint returned an HTML page instead of JSON. Check the API endpoint URL (e.g. a missing /v1 path, or a website address instead of the API).',
     'msg.invalidJson': 'The endpoint returned an invalid JSON response',
+    'msg.responseTooLarge': 'The endpoint response is too large to process safely',
     'help.baseUrlV1Hint': 'Tip: OpenAI-compatible endpoints usually end with /v1 (e.g. https://api.openai.com/v1).',
     'settings.customModels': 'Custom models',
     'help.customModels': 'Comma-separated model IDs. When set, the model dropdown uses these directly instead of querying the API (for APIs without a model list endpoint).',
@@ -1512,6 +1650,7 @@ const translations = {
     'context.quote': '引用',
     'msg.htmlResponse': '端点返回的是网页而非 JSON。请检查 API 端点是否正确（例如缺少 /v1 路径，或填成了网站地址）',
     'msg.invalidJson': '端点返回了无效的 JSON 响应',
+    'msg.responseTooLarge': '端点响应过大，已停止处理以保护浏览器',
     'help.baseUrlV1Hint': '提示：OpenAI 兼容端点通常以 /v1 结尾（如 https://api.openai.com/v1）。',
     'settings.customModels': '自定义模型',
     'help.customModels': '用逗号分隔多个模型 ID；填写后模型列表直接使用它们，不再从 API 获取（适用于不支持模型列表接口的 API）',
@@ -1592,8 +1731,11 @@ class SidePanelController {
    * Initialize the side panel controller
    */
   private async initialize(): Promise<void> {
-    // Initialize encryption key first
-    await StorageService.initialize();
+    try {
+      await StorageService.prepareStorage();
+    } catch (error) {
+      console.error('Failed to prepare settings storage:', error);
+    }
     this.initializeDOMElements();
     this.setupEventListeners();
     await this.loadSettings();

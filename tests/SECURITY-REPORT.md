@@ -21,8 +21,8 @@
 
 - **位置**: `sanitizeAttachments`（sidepanel.ts）
 - **问题**: 净化持久化历史时只截断 `dataUrl` 长度、不校验前缀。若 `chat_history` 被篡改（其他本机进程或存储损坏），`img.src` 可指向远程 URL（追踪像素、内网地址探测）或 `data:text/html`。
-- **修复**: 图片附件强制 `data:image/` 前缀，否则整条丢弃；已随构建进入 dist。
-- **测试**: `attachments.test.ts` — `https://` / `data:text/html` / `javascript:` 三向量全部拒绝。
+- **修复**: 图片附件仅接受带严格 MIME 白名单的 base64 栅格 `data:image/...` URL，SVG、远程 URL 和脚本协议全部丢弃；已随构建进入 dist。
+- **测试**: `attachments.test.ts` — `https://` / `data:text/html` / `javascript:` / SVG 四向量全部拒绝。
 
 ### F2（高危面 · 已防护 + 已测）AI 输出 XSS
 
@@ -41,7 +41,7 @@
 
 ### F5（低 · 已防护）innerHTML 之外的注入路径
 
-- 思考过程正文、用户消息、附件文件名、引用预览均经 `textContent` 或 DOM 属性赋值写入，无字符串拼 HTML；图片缩略图 `src` 在 F1 修复后仅接受 `data:image/`。
+- 思考过程正文、用户消息、附件文件名、引用预览均经 `textContent` 或 DOM 属性赋值写入，无字符串拼 HTML；图片缩略图 `src` 在 F1 修复后仅接受白名单栅格 `data:image/...`。
 - 内部掩码占位符（`\x00`/`\x01` 序列）在输出前必然还原，测试断言输出不含原始控制字符（也保护 grep/IDE 不被字节污染）。
 
 ### F6（权限面 · 最小化 + 已测）manifest
@@ -52,7 +52,7 @@
 
 ### F7（凭据面 · 已防护 + 已测）API 密钥
 
-- 加密存储（AES，随机 IV，`crypto.test.ts`）；「记住密钥」未勾选时密钥只进 `chrome.storage.session`（浏览器关闭即清，`storage.test.ts` 验证不落盘）；输入框 `type="password"` + `autocomplete="new-password"`（防浏览器把密钥当账号密码自动填充/同步）。
+- 加密存储（AES-GCM、随机 IV、导入密钥校验，`crypto.test.ts`）；「记住密钥」勾选时只将密文写入 `chrome.storage.local`，未勾选时密钥只进 `chrome.storage.session`（浏览器关闭即清，`sidepanel-storage.test.ts` 验证不落明文）；输入框 `type="password"` + `autocomplete="new-password"`（防浏览器把密钥当账号密码自动填充/同步）。
 
 ### F8（CSP 面 · 默认安全 + 已测）内容安全策略
 
@@ -70,7 +70,7 @@
 | `security.test.ts`（18） | 全部 | F2 / F3 / F4 / F5 |
 | `attachments.test.ts` | 7（sanitizeAttachments 组） | F1 / T2 |
 | `ui-static.test.ts` | 8（权限 3 + HTML 卫生 5） | F6 / F7 / F8 |
-| `storage.test.ts` + `crypto.test.ts` | 10（密钥隔离/加密） | F7 / T4 |
+| `sidepanel-storage.test.ts` + `crypto.test.ts` | 12（密钥隔离/加密） | F7 / T4 |
 | `markdown.test.ts` | 2（safety 组） | F2 |
 
 ## 四、残余风险与建议

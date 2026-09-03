@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "页知 - PageMind",
   "short_name": "页知",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "读懂当前网页、选中文字并随时提问的智能浏览伙伴",
   "permissions": [
     "activeTab",
