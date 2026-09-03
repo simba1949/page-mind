@@ -188,7 +188,8 @@ const LIMITS = {
   MAX_CONTEXT_LENGTH: 8000,
   MAX_MESSAGE_LENGTH: 4000,
   MAX_HISTORY_MESSAGES: 100,
-  MAX_ATTACHMENTS: 4
+  MAX_ATTACHMENTS: 4,
+  MAX_API_PROFILES: 10
 } as const;
 
 interface PageContext {
@@ -198,22 +199,45 @@ interface PageContext {
   content: string;
 }
 
-interface APIConfig {
-  provider: 'openai' | 'anthropic';
+export type ApiFormat = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+export interface ApiProfile {
+  id: string;
+  format: ApiFormat;
   apiKey: string;
   model: string;
-  baseUrl?: string; // Custom base URL for compatible APIs
-  customModels?: string[]; // Manual model list; when set, the model dropdown uses it instead of querying the API
+  baseUrl: string;
+  customModels: string[];
   maxTokens?: number;
   temperature?: number;
+  rememberApiKey: boolean;
+  remark: string;
 }
 
-interface AppSettings {
-  api: APIConfig;
+function responsesMessageContent(msg: ChatMessage, includeImages: boolean): unknown {
+  const images = includeImages ? (msg.attachments || []).filter(a => a.kind === 'image' && a.dataUrl) : [];
+  if (images.length === 0) return msg.content;
+  return [
+    { type: 'input_text', text: msg.content },
+    ...images.map(a => ({ type: 'input_image', image_url: a.dataUrl }))
+  ];
+}
+
+export interface AppSettings {
+  profiles: ApiProfile[];
+  activeProfileId: string | null;
   language: 'en' | 'zh';
   theme: 'light' | 'dark' | 'auto';
-  // Whether the API key is persisted to disk (chrome.storage.local) or kept
-  // in-memory for the current browser session only (chrome.storage.session).
+}
+
+type APIConfig = ApiProfile;
+
+interface ProfileFormValues {
+  format: ApiFormat;
+  remark: string;
+  baseUrl: string;
+  apiKey: string;
+  customModels: string;
   rememberApiKey: boolean;
 }
 
@@ -260,47 +284,32 @@ export function sanitizeAttachments(value: unknown): MessageAttachment[] | undef
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
-// API format presets for common providers
-const API_PRESETS = {
-  openai: {
-    name: 'OpenAI',
-    baseUrl: 'https://api.openai.com/v1',
-    models: [
-      'gpt-3.5-turbo',
-      'gpt-4',
-      'gpt-4-turbo',
-      'gpt-4o'
-    ]
-  },
-  anthropic: {
-    name: 'Anthropic',
-    baseUrl: 'https://api.anthropic.com/v1',
-    models: [
-      'claude-3-haiku-20240307',
-      'claude-3-sonnet-20240229',
-      'claude-3-opus-20240229'
-    ]
-  },
-  custom: {
-    name: 'Custom (OpenAI Compatible)',
-    baseUrl: '',
-    models: []
-  }
+// Convenience presets only. Any endpoint implementing a supported format is valid.
+const API_PRESETS: Record<ApiFormat, { name: string; baseUrl: string; models: string[] }> = {
+  'openai-chat': { name: 'OpenAI Chat', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4.1-mini'] },
+  'openai-responses': { name: 'OpenAI Responses', baseUrl: 'https://api.openai.com/v1', models: ['gpt-5', 'gpt-4.1'] },
+  'anthropic-messages': { name: 'Anthropic Messages', baseUrl: 'https://api.anthropic.com/v1', models: ['claude-3-5-sonnet-latest', 'claude-3-haiku-20240307'] }
 };
+
+function createProfile(format: ApiFormat = 'openai-chat'): ApiProfile {
+  const preset = API_PRESETS[format];
+  return {
+    id: newProfileId(), format, apiKey: '', model: '', baseUrl: preset.baseUrl,
+    customModels: [], maxTokens: 8192, temperature: 0.7, rememberApiKey: false, remark: ''
+  };
+}
+
+function newProfileId(): string {
+  const cryptoApi = (globalThis as typeof globalThis & { crypto?: Crypto }).crypto;
+  return typeof cryptoApi?.randomUUID === 'function' ? cryptoApi.randomUUID() : `profile-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 // Default application settings
 const DEFAULT_SETTINGS: AppSettings = {
-  api: {
-    provider: 'openai',
-    apiKey: '',
-    model: 'gpt-3.5-turbo',
-    baseUrl: 'https://api.openai.com/v1',
-    maxTokens: 4096,
-    temperature: 0.7
-  },
+  profiles: [],
+  activeProfileId: null,
   language: 'zh', // 默认中文
   theme: 'auto',
-  rememberApiKey: false
 };
 
 // Storage keys
@@ -309,71 +318,47 @@ const STORAGE_KEYS = {
   CHAT_HISTORY: 'chat_history',
   CONVERSATIONS: 'conversations',
   ENCRYPTION_KEY: 'encryption_key',
+  SESSION_API_KEYS: 'session_api_keys',
   SESSION_API_KEY: 'session_api_key',
   SCHEMA_VERSION: 'settings_schema_version'
 } as const;
-const STORAGE_SCHEMA_VERSION = 1;
+const STORAGE_SCHEMA_VERSION = 2;
 const ENCRYPTED_API_KEY_PREFIX = 'enc:v1:';
 
 /** Normalize untrusted settings read from extension storage. */
 export function sanitizeAppSettings(value: unknown): AppSettings {
-  if (!value || typeof value !== 'object') {
-    return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api } };
+  const stored = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const rawProfiles = Array.isArray(stored.profiles) ? stored.profiles : [];
+  const profiles = rawProfiles.slice(0, LIMITS.MAX_API_PROFILES)
+    .map((raw, index) => sanitizeProfile(raw, index)).filter(Boolean) as ApiProfile[];
+  const activeProfileId = typeof stored.activeProfileId === 'string' && profiles.some(p => p.id === stored.activeProfileId)
+    ? stored.activeProfileId : (profiles[0]?.id || null);
+  return { profiles, activeProfileId,
+    language: stored.language === 'zh' ? 'zh' : 'en',
+    theme: stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'auto' };
+}
+
+function sanitizeProfile(value: unknown, index: number): ApiProfile | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const format: ApiFormat = raw.format === 'openai-responses' || raw.format === 'anthropic-messages' ? raw.format : 'openai-chat';
+  const preset = API_PRESETS[format];
+  let baseUrl = preset.baseUrl;
+  if (typeof raw.baseUrl === 'string' && raw.baseUrl.trim()) {
+    try { baseUrl = normalizeBaseUrl(raw.baseUrl); } catch { /* safe preset */ }
   }
-
-  const stored = value as Record<string, unknown>;
-  const rawApi = stored.api && typeof stored.api === 'object'
-    ? stored.api as Record<string, unknown>
-    : {};
-  const provider = rawApi.provider === 'anthropic' ? 'anthropic' : 'openai';
-  const rawBaseUrl = typeof rawApi.baseUrl === 'string' ? rawApi.baseUrl : '';
-  let baseUrl = DEFAULT_SETTINGS.api.baseUrl;
-  if (rawBaseUrl) {
-    try {
-      baseUrl = normalizeBaseUrl(rawBaseUrl);
-    } catch {
-      // Keep the safe default when persisted settings contain an invalid URL.
-    }
-  }
-
-  const customModels = Array.isArray(rawApi.customModels)
-    ? rawApi.customModels
-      .filter((model): model is string => typeof model === 'string')
-      .map(model => model.trim().slice(0, 200))
-      .filter(Boolean)
-      .filter((model, index, models) => models.indexOf(model) === index)
-      .slice(0, 100)
-    : undefined;
-  const maxTokens = typeof rawApi.maxTokens === 'number' && Number.isFinite(rawApi.maxTokens)
-    ? Math.min(32_000, Math.max(1, Math.round(rawApi.maxTokens)))
-    : DEFAULT_SETTINGS.api.maxTokens;
-  const temperature = typeof rawApi.temperature === 'number' && Number.isFinite(rawApi.temperature)
-    ? Math.min(2, Math.max(0, rawApi.temperature))
-    : DEFAULT_SETTINGS.api.temperature;
-  const language = stored.language === 'zh' ? 'zh' : 'en';
-  const theme = stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'auto';
-  const rememberApiKey = typeof stored.rememberApiKey === 'boolean'
-    ? stored.rememberApiKey
-    : DEFAULT_SETTINGS.rememberApiKey;
-
+  const customModels = Array.isArray(raw.customModels) ? raw.customModels
+    .filter((model): model is string => typeof model === 'string').map(model => model.trim().slice(0, 200))
+    .filter(Boolean).filter((model, i, all) => all.indexOf(model) === i).slice(0, 100) : [];
   return {
-    api: {
-      ...DEFAULT_SETTINGS.api,
-      provider,
-      // Leave room for the encrypted representation (ciphertext + base64
-      // overhead) while still bounding untrusted storage input.
-      apiKey: typeof rawApi.apiKey === 'string' ? rawApi.apiKey.trim().slice(0, 4_096) : '',
-      model: typeof rawApi.model === 'string' && rawApi.model.trim()
-        ? rawApi.model.trim().slice(0, 200)
-        : DEFAULT_SETTINGS.api.model,
-      baseUrl,
-      ...(customModels ? { customModels } : {}),
-      maxTokens,
-      temperature
-    },
-    language,
-    theme,
-    rememberApiKey
+    id: typeof raw.id === 'string' && /^[\w-]{1,100}$/.test(raw.id) ? raw.id : `profile-${index + 1}-${newProfileId()}`,
+    format, baseUrl, customModels,
+    apiKey: typeof raw.apiKey === 'string' ? raw.apiKey.trim().slice(0, 4096) : '',
+    model: typeof raw.model === 'string' ? raw.model.trim().slice(0, 200) : '',
+    maxTokens: typeof raw.maxTokens === 'number' && Number.isFinite(raw.maxTokens) ? Math.min(32000, Math.max(1, Math.round(raw.maxTokens))) : 8192,
+    temperature: typeof raw.temperature === 'number' && Number.isFinite(raw.temperature) ? Math.min(2, Math.max(0, raw.temperature)) : 0.7,
+    rememberApiKey: raw.rememberApiKey === true,
+    remark: typeof raw.remark === 'string' ? raw.remark.trim().slice(0, 80) : ''
   };
 }
 
@@ -381,7 +366,7 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
 export class StorageService {
   private static encryptionKeyPromise: Promise<CryptoKey> | null = null;
 
-  /** Reset pre-0.1.1 data; this release intentionally has no migration path. */
+  /** Initialize the current settings storage schema. */
   static async prepareStorage(): Promise<void> {
     const result = await chrome.storage.local.get(STORAGE_KEYS.SCHEMA_VERSION);
     if (result[STORAGE_KEYS.SCHEMA_VERSION] === STORAGE_SCHEMA_VERSION) return;
@@ -392,7 +377,7 @@ export class StorageService {
         STORAGE_KEYS.ENCRYPTION_KEY,
         STORAGE_KEYS.SCHEMA_VERSION
       ]),
-      chrome.storage.session.remove(STORAGE_KEYS.SESSION_API_KEY)
+      chrome.storage.session.remove([STORAGE_KEYS.SESSION_API_KEYS, STORAGE_KEYS.SESSION_API_KEY])
     ]);
     await chrome.storage.local.set({
       [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION
@@ -444,48 +429,45 @@ export class StorageService {
     try {
       const [localResult, sessionResult] = await Promise.all([
         chrome.storage.local.get(STORAGE_KEYS.SETTINGS),
-        chrome.storage.session.get(STORAGE_KEYS.SESSION_API_KEY)
+        chrome.storage.session.get(STORAGE_KEYS.SESSION_API_KEYS)
       ]);
       const settings = sanitizeAppSettings(localResult[STORAGE_KEYS.SETTINGS]);
 
-      if (settings.rememberApiKey) {
-        settings.api.apiKey = await this.decryptApiKey(settings.api.apiKey);
-      } else {
-        // When the user hasn't opted in to remembering the key on this device,
-        // it only ever lives in session storage (cleared on browser restart).
-        settings.api.apiKey = sanitizeApiKey(sessionResult?.[STORAGE_KEYS.SESSION_API_KEY]);
+      const sessionKeys = sessionResult?.[STORAGE_KEYS.SESSION_API_KEYS];
+      for (const profile of settings.profiles) {
+        if (profile.rememberApiKey) profile.apiKey = await this.decryptApiKey(profile.apiKey);
+        else profile.apiKey = sanitizeApiKey(sessionKeys?.[profile.id]);
       }
 
       return settings;
     } catch (error) {
       console.error('Failed to load settings:', error);
-      return { ...DEFAULT_SETTINGS, api: { ...DEFAULT_SETTINGS.api } };
+      return { ...DEFAULT_SETTINGS, profiles: [] };
     }
   }
 
   static async saveSettings(settings: AppSettings): Promise<void> {
     try {
       const sanitized = sanitizeAppSettings(settings);
-      const apiKey = sanitized.api.apiKey.trim();
-      const remember = sanitized.rememberApiKey;
-      const storedApiKey = remember && apiKey ? await this.encryptApiKey(apiKey) : '';
-
-      const settingsToSave: AppSettings = {
-        ...sanitized,
-        rememberApiKey: remember,
-        // Remembered keys are encrypted before entering persistent storage.
-        // Otherwise they stay in session storage only (cleared on restart).
-        api: { ...sanitized.api, apiKey: storedApiKey }
-      };
-
+      const sessionKeys: Record<string, string> = {};
+      const persistedProfiles = [] as ApiProfile[];
+      for (const profile of sanitized.profiles) {
+        const apiKey = profile.apiKey.trim();
+        if (!profile.rememberApiKey && apiKey) sessionKeys[profile.id] = apiKey;
+        persistedProfiles.push({ ...profile, apiKey: profile.rememberApiKey && apiKey ? await this.encryptApiKey(apiKey) : '' });
+      }
+      const settingsToSave = { profiles: persistedProfiles, activeProfileId: sanitized.activeProfileId,
+        language: sanitized.language, theme: sanitized.theme };
       await Promise.all([
         chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: settingsToSave }),
-        remember
-          ? chrome.storage.session.remove(STORAGE_KEYS.SESSION_API_KEY)
-          : (apiKey
-              ? chrome.storage.session.set({ [STORAGE_KEYS.SESSION_API_KEY]: apiKey })
-              : chrome.storage.session.remove(STORAGE_KEYS.SESSION_API_KEY))
+        Object.keys(sessionKeys).length
+          ? chrome.storage.session.set({ [STORAGE_KEYS.SESSION_API_KEYS]: sessionKeys })
+          : chrome.storage.session.remove(STORAGE_KEYS.SESSION_API_KEYS),
+        sanitized.profiles.length === 0
+          ? chrome.storage.local.remove(STORAGE_KEYS.ENCRYPTION_KEY)
+          : Promise.resolve()
       ]);
+      if (sanitized.profiles.length === 0) this.encryptionKeyPromise = null;
     } catch (error) {
       console.error('Failed to save settings:', error);
       throw error;
@@ -552,6 +534,9 @@ function normalizeBaseUrl(value: string): string {
   } catch {
     throw new Error('Invalid API endpoint');
   }
+  if (url.toString().length > 2048) {
+    throw new Error('API endpoint exceeds the 2048-character limit');
+  }
 
   const isLocalHttp = url.protocol === 'http:' &&
     (url.hostname === 'localhost' || url.hostname === '127.0.0.1');
@@ -584,6 +569,65 @@ export function parseCustomModels(value: string): string[] {
     }
   }
   return [...seen].slice(0, 100);
+}
+
+function profileDisplayName(profile: ApiProfile): string {
+  return profile.remark || API_PRESETS[profile.format].name;
+}
+
+function profileHostLabel(profile: ApiProfile): string {
+  try {
+    return new URL(profile.baseUrl).host;
+  } catch {
+    return '';
+  }
+}
+
+const EMPTY_STATE_PLUS_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+
+function buildProfileActionButton(profile: ApiProfile, action: 'edit' | 'delete', label: string): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `api-profile-action${action === 'delete' ? ' danger' : ''}`;
+  button.dataset.action = action;
+  button.dataset.profileId = profile.id;
+  button.setAttribute('aria-label', `${label} ${profileDisplayName(profile)}`);
+  button.textContent = label;
+  return button;
+}
+
+function buildProfileActionsCell(profile: ApiProfile): HTMLTableCellElement {
+  const cell = document.createElement('td');
+  cell.className = 'api-profile-actions-cell';
+  cell.append(
+    buildProfileActionButton(profile, 'edit', '编辑'),
+    buildProfileActionButton(profile, 'delete', '删除')
+  );
+  return cell;
+}
+
+function buildEmptyProfileRow(): HTMLTableRowElement {
+  const row = document.createElement('tr');
+  row.className = 'api-profile-empty-row';
+  const cell = document.createElement('td');
+  cell.colSpan = 2;
+  cell.className = 'api-profile-empty';
+  const inner = document.createElement('div');
+  inner.className = 'api-profile-empty-inner';
+  const icon = document.createElement('span');
+  icon.className = 'api-profile-empty-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = EMPTY_STATE_PLUS_SVG;
+  const title = document.createElement('span');
+  title.className = 'api-profile-empty-title';
+  title.textContent = '暂无 API 配置';
+  const hint = document.createElement('span');
+  hint.className = 'api-profile-empty-hint';
+  hint.textContent = '点击右上角「新增」，添加第一个 API 配置';
+  inner.append(icon, title, hint);
+  cell.appendChild(inner);
+  row.appendChild(cell);
+  return row;
 }
 
 /**
@@ -1034,7 +1078,7 @@ export function createThinkSeparator(
 
 // Base API service for LLM communication
 // Supports OpenAI/Anthropic compatible API formats with custom endpoints
-class APIService {
+export class APIService {
   private config: APIConfig;
   private static readonly REQUEST_TIMEOUT_MS = 120_000;
   private static readonly MAX_JSON_RESPONSE_BYTES = 4_000_000;
@@ -1042,7 +1086,7 @@ class APIService {
   constructor(config: APIConfig) {
     this.config = {
       ...config,
-      baseUrl: normalizeBaseUrl(config.baseUrl || API_PRESETS[config.provider].baseUrl)
+      baseUrl: normalizeBaseUrl(config.baseUrl || API_PRESETS[config.format].baseUrl)
     };
   }
 
@@ -1099,15 +1143,15 @@ class APIService {
       throw new Error('API key is required');
     }
 
-    const baseUrl = this.config.baseUrl || API_PRESETS[this.config.provider].baseUrl;
+    const baseUrl = this.config.baseUrl || API_PRESETS[this.config.format].baseUrl;
 
     try {
-      if (this.config.provider === 'openai') {
+      if (this.config.format === 'openai-chat' || this.config.format === 'openai-responses') {
         return await this.fetchOpenAIModels(baseUrl);
-      } else if (this.config.provider === 'anthropic') {
+      } else if (this.config.format === 'anthropic-messages') {
         return await this.fetchAnthropicModels(baseUrl);
       } else {
-        throw new Error(`Unsupported provider: ${this.config.provider}`);
+        throw new Error(`Unsupported API format: ${this.config.format}`);
       }
     } catch (error) {
       console.error('Failed to fetch models:', error);
@@ -1148,9 +1192,8 @@ class APIService {
   }
 
   /**
-   * Fetch models from an Anthropic compatible API. Modern Anthropic APIs and
-   * gateways (New API, One API...) expose the OpenAI-style GET /models route;
-   * try it and fall back to the preset list when the endpoint lacks it.
+   * Fetch models from an Anthropic Messages API. Services may omit /models;
+   * in that case the user can supply custom model IDs.
    */
   private async fetchAnthropicModels(baseUrl: string): Promise<string[]> {
     try {
@@ -1174,9 +1217,9 @@ class APIService {
         }
       }
     } catch {
-      // Endpoint doesn't serve /models — use the preset list below
+      // Endpoint doesn't serve /models.
     }
-    return API_PRESETS.anthropic.models;
+    return [];
   }
 
   async chat(messages: ChatMessage[], handlers?: StreamHandlers): Promise<any> {
@@ -1185,15 +1228,17 @@ class APIService {
     }
 
     // Use custom baseUrl if provided, otherwise use preset
-    const baseUrl = this.config.baseUrl || API_PRESETS[this.config.provider].baseUrl;
+    const baseUrl = this.config.baseUrl || API_PRESETS[this.config.format].baseUrl;
 
     try {
-      if (this.config.provider === 'openai') {
+      if (this.config.format === 'openai-chat') {
         return await this.chatWithOpenAI(messages, baseUrl, handlers);
-      } else if (this.config.provider === 'anthropic') {
+      } else if (this.config.format === 'openai-responses') {
+        return await this.chatWithOpenAIResponses(messages, baseUrl, handlers);
+      } else if (this.config.format === 'anthropic-messages') {
         return await this.chatWithAnthropic(messages, baseUrl, handlers);
       } else {
-        throw new Error(`Unsupported provider: ${this.config.provider}`);
+        throw new Error(`Unsupported API format: ${this.config.format}`);
       }
     } catch (error) {
       console.error('API request failed:', error);
@@ -1340,6 +1385,48 @@ class APIService {
         totalTokens: usage?.total_tokens || 0
       }
     };
+  }
+
+  private async chatWithOpenAIResponses(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers): Promise<any> {
+    if (!this.config.model) throw new Error('No model selected. Please select a model from the header dropdown.');
+    const input = messages.filter(message => message.role !== 'system').map(message => ({
+      role: message.role,
+      content: responsesMessageContent(message, message === messages[messages.length - 1])
+    }));
+    const system = messages.find(message => message.role === 'system')?.content;
+    const body = {
+      model: this.config.model, input, stream: true,
+      ...(system ? { instructions: system } : {}),
+      ...(modelOmitsTemperature(this.config.model) ? {} : { temperature: this.config.temperature })
+    };
+    const response = await this.request(`${baseUrl}/responses`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` }, body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(openAICompatibleErrorMessage(response.status, detail));
+    }
+    if (!response.body) throw new Error('Streaming responses are not supported in this environment');
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/event-stream')) {
+      const data = await this.parseJsonBody(response);
+      const content = typeof data.output_text === 'string' ? data.output_text : '';
+      if (content) handlers?.onContent?.(content);
+      return { content, usage: { promptTokens: data.usage?.input_tokens || 0, completionTokens: data.usage?.output_tokens || 0, totalTokens: data.usage?.total_tokens || 0 } };
+    }
+    let content = '';
+    let usage: any = null;
+    await this.consumeSSE(response.body, payload => {
+      if (payload === '[DONE]') return;
+      let event: any;
+      try { event = JSON.parse(payload); } catch { return; }
+      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+        content += event.delta; handlers?.onContent?.(event.delta);
+      }
+      if (event.type === 'response.completed') usage = event.response?.usage || usage;
+      if (event.type === 'error' || event.type === 'response.failed') throw new Error(event.error?.message || event.response?.error?.message || 'Responses API streaming error');
+    });
+    return { content, usage: { promptTokens: usage?.input_tokens || 0, completionTokens: usage?.output_tokens || 0, totalTokens: usage?.total_tokens || 0 } };
   }
 
   private async chatWithAnthropic(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers): Promise<any> {
@@ -1515,8 +1602,7 @@ const translations = {
     'settings.title': 'Settings',
     'settings.baseUrl': 'Base URL',
     'settings.apiProvider': 'API Format',
-    'provider.openai': 'OpenAI Compatible',
-    'provider.anthropic': 'Anthropic Compatible',
+    'settings.remark': 'Name',
     'context.label': 'Current Page',
     'settings.apiKey': 'API Key',
     'settings.model': 'Model',
@@ -1578,7 +1664,6 @@ const translations = {
     'label.rememberKey': 'Remember key on this device',
     'label.warningTitle': 'Security Notice',
     'label.warningText': 'Your key will be stored in this Chrome user profile and is only accessible by this extension. Uncheck after closing the browser to clear automatically.',
-    'label.testConnection': 'Test Connection',
     'label.summarize': 'Summarize',
     'label.explain': 'Explain',
     'label.translate': 'Translate'
@@ -1601,8 +1686,7 @@ const translations = {
     'settings.title': '设置',
     'settings.baseUrl': 'API 端点',
     'settings.apiProvider': 'API 格式',
-    'provider.openai': 'OpenAI 兼容',
-    'provider.anthropic': 'Anthropic 兼容',
+    'settings.remark': '名称',
     'context.label': '当前页面',
     'settings.apiKey': 'API 密钥',
     'settings.model': '模型',
@@ -1664,7 +1748,6 @@ const translations = {
     'label.rememberKey': '在此设备记住密钥',
     'label.warningTitle': '安全提示',
     'label.warningText': '密钥将保存在此 Chrome 用户配置中，仅本插件可访问。取消勾选后关闭浏览器会自动清理。',
-    'label.testConnection': '测试连接',
     'label.summarize': '总结',
     'label.explain': '解释',
     'label.translate': '翻译'
@@ -1706,9 +1789,8 @@ class SidePanelController {
   private settingsModal!: HTMLElement;
   private closeSettingsBtn!: HTMLButtonElement;
   private saveSettingsBtn!: HTMLButtonElement;
-  private testConnectionBtn!: HTMLButtonElement;
-  private testResult!: HTMLElement;
   private loadingOverlay!: HTMLElement;
+  private profileSelect!: HTMLSelectElement;
   private headerModelSelect!: HTMLSelectElement;
   private previewBar!: HTMLElement;
   private previewIcon!: HTMLElement;
@@ -1722,6 +1804,110 @@ class SidePanelController {
   private fileInput!: HTMLInputElement;
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private profileEditor!: HTMLElement;
+  private closeProfileEditorBtn!: HTMLButtonElement;
+  private profileEditorTitle!: HTMLElement;
+  private profileList!: HTMLElement;
+  private editingProfileId: string | null = null;
+
+  private getActiveProfile(settings: AppSettings): ApiProfile | null {
+    return settings.profiles.find(profile => profile.id === settings.activeProfileId) || null;
+  }
+
+  private async activateProfile(profileId: string): Promise<void> {
+    const settings = await StorageService.getSettings();
+    if (!settings.profiles.some(profile => profile.id === profileId)) return;
+    settings.activeProfileId = profileId;
+    this.editingProfileId = profileId;
+    await StorageService.saveSettings(settings);
+    this.availableModels = [];
+    this.apiService = null;
+    await this.refreshProfileUI();
+  }
+
+  private async refreshProfileUI(): Promise<void> {
+    const settings = await StorageService.getSettings();
+    this.populateProfileSelects(settings);
+    const profile = this.getActiveProfile(settings);
+    this.apiService = profile?.apiKey ? new APIService(profile) : null;
+    this.populateModelSelect(profile?.customModels || (profile?.model ? [profile.model] : []));
+    if (profile?.apiKey && profile.customModels.length === 0 && await ensureEndpointPermission(profile.baseUrl, false)) {
+      await this.fetchModels(profile);
+    }
+    this.updateSendButton();
+  }
+
+  private populateProfileSelects(settings: AppSettings): void {
+    const fill = (select: HTMLSelectElement): void => {
+      select.replaceChildren();
+      if (settings.profiles.length === 0) {
+        const empty = document.createElement('option'); empty.value = ''; empty.textContent = '未配置 API'; select.appendChild(empty); select.disabled = true; return;
+      }
+      settings.profiles.forEach(profile => {
+        const option = document.createElement('option'); option.value = profile.id;
+        option.textContent = profile.remark || `${API_PRESETS[profile.format].name} · ${profile.baseUrl}`;
+        select.appendChild(option);
+      });
+      select.value = settings.activeProfileId || settings.profiles[0].id;
+      select.disabled = false;
+    };
+    fill(this.profileSelect);
+    this.renderProfileList(settings);
+  }
+
+  /** Rebuild the profile table: rows, empty state, add-button state. */
+  private renderProfileList(settings: AppSettings): void {
+    this.profileList.replaceChildren();
+    for (const profile of settings.profiles) {
+      this.profileList.appendChild(this.buildProfileRow(settings, profile));
+    }
+    if (settings.profiles.length === 0) {
+      this.profileList.appendChild(buildEmptyProfileRow());
+    }
+    this.syncAddProfileButton(settings.profiles.length);
+  }
+
+  private buildProfileRow(settings: AppSettings, profile: ApiProfile): HTMLTableRowElement {
+    const isActive = profile.id === settings.activeProfileId;
+    const isEditing = profile.id === this.editingProfileId;
+    const row = document.createElement('tr');
+    row.className = `api-profile-item${isActive ? ' active' : ''}${isEditing ? ' editing' : ''}`;
+    row.dataset.profileId = profile.id;
+    row.append(this.buildProfileNameCell(profile, isActive), buildProfileActionsCell(profile));
+    return row;
+  }
+
+  private buildProfileNameCell(profile: ApiProfile, isActive: boolean): HTMLTableCellElement {
+    const nameText = document.createElement('span');
+    nameText.className = 'api-profile-name-text';
+    nameText.textContent = profileDisplayName(profile);
+
+    const name = document.createElement('div');
+    name.className = 'api-profile-name';
+    name.appendChild(nameText);
+    if (isActive) {
+      const tag = document.createElement('span');
+      tag.className = 'api-profile-active-tag';
+      tag.textContent = '使用中';
+      name.appendChild(tag);
+    }
+
+    const host = profileHostLabel(profile);
+    const caption = document.createElement('span');
+    caption.className = 'api-profile-name-caption';
+    caption.textContent = host;
+    caption.hidden = !host;
+
+    const cell = document.createElement('td');
+    cell.className = 'api-profile-name-cell';
+    cell.append(name, caption);
+    return cell;
+  }
+
+  private syncAddProfileButton(profileCount: number): void {
+    const addButton = document.getElementById('add-profile') as HTMLButtonElement | null;
+    if (addButton) addButton.disabled = profileCount >= LIMITS.MAX_API_PROFILES;
+  }
 
   constructor() {
     this.initialize();
@@ -1744,7 +1930,8 @@ class SidePanelController {
 
     // Check if API credentials are configured. If not, show settings modal.
     const settings = await StorageService.getSettings();
-    const hasCredentials = Boolean(settings.api.baseUrl && settings.api.apiKey);
+    const activeProfile = this.getActiveProfile(settings);
+    const hasCredentials = Boolean(activeProfile?.baseUrl && activeProfile?.apiKey);
 
     if (!hasCredentials) {
       // Open settings automatically, user can close it
@@ -2002,16 +2189,19 @@ class SidePanelController {
    */
   private async autoFetchModels(): Promise<void> {
     const settings = await StorageService.getSettings();
-    const customModels = settings.api.customModels || [];
+    this.populateProfileSelects(settings);
+    const profile = this.getActiveProfile(settings);
+    if (!profile) { this.populateModelSelect([]); return; }
+    const customModels = profile.customModels || [];
     if (customModels.length > 0) {
       this.availableModels = customModels;
       this.populateModelSelect(customModels);
       return;
     }
-    if (settings.api.baseUrl && settings.api.apiKey) {
+    if (profile.baseUrl && profile.apiKey) {
       try {
-        if (await ensureEndpointPermission(settings.api.baseUrl, false)) {
-          await this.fetchModels(settings.api.provider, settings.api.baseUrl, settings.api.apiKey);
+        if (await ensureEndpointPermission(profile.baseUrl, false)) {
+          await this.fetchModels(profile);
         }
       } catch (error) {
         console.error('Failed to restore model list:', error);
@@ -2031,9 +2221,12 @@ class SidePanelController {
     this.settingsModal = document.getElementById('settings-panel')!;
     this.closeSettingsBtn = document.getElementById('close-settings') as HTMLButtonElement;
     this.saveSettingsBtn = document.getElementById('save-settings') as HTMLButtonElement;
-    this.testConnectionBtn = document.getElementById('test-connection') as HTMLButtonElement;
-    this.testResult = document.getElementById('test-result')!;
     this.loadingOverlay = document.getElementById('loading-overlay')!;
+    this.profileSelect = document.getElementById('profile-select') as HTMLSelectElement;
+    this.profileEditor = document.getElementById('profile-editor')!;
+    this.closeProfileEditorBtn = document.getElementById('close-profile-editor') as HTMLButtonElement;
+    this.profileEditorTitle = document.getElementById('profile-editor-title')!;
+    this.profileList = document.getElementById('api-profile-list')!;
     this.headerModelSelect = document.getElementById('model-select') as HTMLSelectElement;
     this.previewBar = document.getElementById('preview-bar')!;
     this.previewIcon = document.getElementById('preview-icon')!;
@@ -2127,15 +2320,26 @@ class SidePanelController {
   private setupSettingsEvents(): void {
     this.settingsBtn.addEventListener('click', () => this.openSettings());
     this.closeSettingsBtn.addEventListener('click', () => this.closeSettings());
+    this.closeProfileEditorBtn.addEventListener('click', () => this.closeProfileEditor());
     this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
-    this.testConnectionBtn.addEventListener('click', () => this.testConnection());
-    const providerSelect = document.getElementById('api-provider') as HTMLSelectElement;
-    providerSelect.addEventListener('change', () => {
-      const provider = providerSelect.value as 'openai' | 'anthropic';
+    const formatSelect = document.getElementById('api-format') as HTMLSelectElement;
+    formatSelect.addEventListener('change', () => {
+      const format = formatSelect.value as ApiFormat;
       const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
-      baseUrlInput.value = API_PRESETS[provider].baseUrl;
+      baseUrlInput.value = API_PRESETS[format].baseUrl;
       this.updateBaseUrlHint();
-      this.testResult.classList.add('hidden');
+    });
+    this.profileSelect.addEventListener('change', () => void this.activateProfile(this.profileSelect.value));
+    document.getElementById('add-profile')?.addEventListener('click', () => void this.addProfile());
+    this.profileList.addEventListener('click', event => {
+      const action = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action]');
+      const profileId = action?.dataset.profileId;
+      if (!action || !profileId) return;
+      if (action.dataset.action === 'edit') {
+        this.openProfileEditor(profileId);
+      } else if (action.dataset.action === 'delete') {
+        void this.deleteProfile(profileId);
+      }
     });
 
     // Live-check the endpoint field and show the /v1 advisory hint if needed
@@ -2278,15 +2482,25 @@ class SidePanelController {
     }
   }
 
-  /** Register settings modal dismissal behavior. */
+  /** Register settings and editor modal dismissal behavior. */
   private setupModalEvents(): void {
     this.settingsModal.addEventListener('click', (e) => {
       if (e.target === this.settingsModal) {
         this.closeSettings();
       }
     });
+    this.profileEditor.addEventListener('click', (e) => {
+      if (e.target === this.profileEditor) {
+        this.closeProfileEditor();
+      }
+    });
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && !this.settingsModal.classList.contains('hidden')) {
+      if (event.key !== 'Escape') return;
+      if (!this.profileEditor.classList.contains('hidden')) {
+        this.closeProfileEditor();
+        return;
+      }
+      if (!this.settingsModal.classList.contains('hidden')) {
         this.closeSettings();
       }
     });
@@ -2408,16 +2622,18 @@ class SidePanelController {
    */
   private async loadSettings(): Promise<void> {
     const settings = await StorageService.getSettings();
+    this.populateProfileSelects(settings);
+    const profile = this.getActiveProfile(settings);
 
     // Initialize API service
-    if (settings.api.apiKey) {
-      this.apiService = new APIService(settings.api);
+    if (profile?.apiKey) {
+      this.apiService = new APIService(profile);
     }
     // Show only the previously configured model (if any) until the real
     // model list is fetched from the configured endpoint. Do not fall back
     // to the hardcoded preset list, since it may not match a custom endpoint.
-    if (settings.api.model) {
-      this.populateModelSelect([settings.api.model]);
+    if (profile?.model) {
+      this.populateModelSelect([profile.model]);
     } else {
       this.headerModelSelect.replaceChildren();
       const placeholder = document.createElement('option');
@@ -3073,20 +3289,13 @@ Instructions:
   /**
    * Fetch available models from the API endpoint
    */
-  private async fetchModels(provider?: 'openai' | 'anthropic', baseUrl?: string, apiKey?: string): Promise<void> {
-    // Use provided values or read from form
-    if (!provider) {
-      const providerSelect = document.getElementById('api-provider') as HTMLSelectElement;
-      provider = providerSelect.value as 'openai' | 'anthropic';
+  private async fetchModels(profile?: ApiProfile): Promise<void> {
+    if (!profile) {
+      const settings = await StorageService.getSettings();
+      profile = this.getActiveProfile(settings) || undefined;
     }
-    if (!baseUrl) {
-      const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
-      baseUrl = baseUrlInput.value.trim();
-    }
-    if (!apiKey) {
-      const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
-      apiKey = apiKeyInput.value.trim();
-    }
+    const baseUrl = profile?.baseUrl || '';
+    const apiKey = profile?.apiKey || '';
 
     if (!baseUrl) {
       this.showError(I18nService.t('msg.noEndpoint'));
@@ -3120,14 +3329,8 @@ Instructions:
     this.headerModelSelect.replaceChildren(loadingOption);
 
     try {
-      const tempConfig: APIConfig = {
-        provider,
-        apiKey,
-        model: '',
-        baseUrl,
-        maxTokens: 2048,
-        temperature: 0.7
-      };
+      if (!profile) throw new Error(I18nService.t('msg.noApiKey'));
+      const tempConfig: APIConfig = { ...profile, apiKey, model: '' };
 
       const tempService = new APIService(tempConfig);
       const models = await tempService.fetchModels();
@@ -3196,17 +3399,18 @@ Instructions:
 
     // Try to select the previously saved model
     StorageService.getSettings().then(async settings => {
-      if (settings.api.model && models.includes(settings.api.model)) {
-        this.headerModelSelect.value = settings.api.model;
-      } else if (settings.api.model) {
-        // The saved model isn't offered by this endpoint (provider switched,
+      const active = this.getActiveProfile(settings);
+      if (active?.model && models.includes(active.model)) {
+        this.headerModelSelect.value = active.model;
+      } else if (active?.model) {
+        // The saved model isn't offered by this endpoint (format or endpoint changed,
         // or a different gateway). Clear it so chat reports "no model
         // selected" instead of sending requests for a model the endpoint
         // will reject anyway.
-        settings.api.model = '';
+        active.model = '';
         await StorageService.saveSettings(settings);
         if (this.apiService) {
-          this.apiService = new APIService({ ...settings.api, model: '' });
+          this.apiService = new APIService({ ...active, model: '' });
         }
       }
     });
@@ -3221,12 +3425,14 @@ Instructions:
 
     // Save the selected model to settings
     const settings = await StorageService.getSettings();
-    settings.api.model = selectedModel;
+    const active = this.getActiveProfile(settings);
+    if (!active) return;
+    active.model = selectedModel;
     await StorageService.saveSettings(settings);
 
     // Update API service
-    if (settings.api.apiKey) {
-      this.apiService = new APIService(settings.api);
+    if (active.apiKey) {
+      this.apiService = new APIService(active);
     }
   }
 
@@ -3269,19 +3475,49 @@ Instructions:
     this.applyTheme(newTheme);
   }
 
-  /**
-   * Open settings modal
-   */
+  /** Open settings modal (list only; adding/editing opens the editor layer). */
   private openSettings(): void {
-    this.populateSettingsForm();
+    void StorageService.getSettings().then(settings => this.populateProfileSelects(settings));
     this.settingsModal.classList.remove('hidden');
     this.closeSettingsBtn.focus();
   }
 
-  /**
-   * Close settings modal
-   */
+  private async addProfile(): Promise<void> {
+    const settings = await StorageService.getSettings();
+    if (settings.profiles.length >= LIMITS.MAX_API_PROFILES) {
+      this.showError(`最多支持 ${LIMITS.MAX_API_PROFILES} 个 API 配置`);
+      return;
+    }
+    this.openProfileEditor(null);
+  }
+
+  /** Open the profile editor layer; a null id starts a new profile on save. */
+  private openProfileEditor(profileId: string | null): void {
+    this.editingProfileId = profileId;
+    void this.populateSettingsForm();
+    this.profileEditorTitle.textContent = profileId ? '编辑 API' : '新增 API';
+    this.profileEditor.classList.remove('hidden');
+    this.closeProfileEditorBtn.focus();
+  }
+
+  private closeProfileEditor(): void {
+    this.profileEditor.classList.add('hidden');
+    this.closeSettingsBtn.focus();
+  }
+
+  private async deleteProfile(profileId: string): Promise<void> {
+    const settings = await StorageService.getSettings();
+    settings.profiles = settings.profiles.filter(profile => profile.id !== profileId);
+    if (settings.activeProfileId === profileId) settings.activeProfileId = settings.profiles[0]?.id || null;
+    if (this.editingProfileId === profileId) this.editingProfileId = settings.activeProfileId || settings.profiles[0]?.id || null;
+    await StorageService.saveSettings(settings);
+    this.availableModels = [];
+    await this.refreshProfileUI();
+  }
+
+  /** Close settings modal. */
   private closeSettings(): void {
+    this.profileEditor.classList.add('hidden');
     this.settingsModal.classList.add('hidden');
     this.settingsBtn.focus();
   }
@@ -3289,7 +3525,7 @@ Instructions:
   /**
    * Toggle the advisory hint under the endpoint field: shown when the
    * entered URL has no version path segment (/v1, /v4, ...). Advisory only —
-   * some providers (e.g. DeepSeek) legitimately serve the API at the root.
+   * some services legitimately serve the API at the root.
    */
   private updateBaseUrlHint(): void {
     const baseUrlInput = document.getElementById('base-url') as HTMLInputElement | null;
@@ -3305,179 +3541,153 @@ Instructions:
    */
   private async populateSettingsForm(): Promise<void> {
     const settings = await StorageService.getSettings();
+    this.populateProfileSelects(settings);
+    const profile = settings.profiles.find(item => item.id === this.editingProfileId) || null;
+    this.fillProfileForm(profile);
+    await this.restoreModelList(profile);
+  }
 
-    const providerSelect = document.getElementById('api-provider') as HTMLSelectElement | null;
+  /** Fill the editor inputs from a profile; null seeds add-mode defaults. */
+  private fillProfileForm(profile: ApiProfile | null): void {
+    const formatSelect = document.getElementById('api-format') as HTMLSelectElement | null;
     const baseUrlInput = document.getElementById('base-url') as HTMLInputElement | null;
     const apiKeyInput = document.getElementById('api-key') as HTMLInputElement | null;
     const rememberKeyInput = document.getElementById('remember-api-key') as HTMLInputElement | null;
     const customModelsInput = document.getElementById('custom-models') as HTMLInputElement | null;
+    const remarkInput = document.getElementById('profile-remark') as HTMLInputElement | null;
+    if (!formatSelect || !baseUrlInput || !apiKeyInput) return;
 
-    if (!providerSelect || !baseUrlInput || !apiKeyInput) return;
-
-    providerSelect.value = settings.api.provider;
-    baseUrlInput.value = settings.api.baseUrl || API_PRESETS[settings.api.provider].baseUrl;
-    apiKeyInput.value = settings.api.apiKey;
+    if (!profile) {
+      formatSelect.value = 'openai-chat';
+      baseUrlInput.value = API_PRESETS['openai-chat'].baseUrl;
+      apiKeyInput.value = '';
+      if (remarkInput) remarkInput.value = '';
+      if (rememberKeyInput) rememberKeyInput.checked = false;
+      if (customModelsInput) customModelsInput.value = '';
+    } else {
+      formatSelect.value = profile.format;
+      baseUrlInput.value = profile.baseUrl;
+      apiKeyInput.value = profile.apiKey;
+      if (remarkInput) remarkInput.value = profile.remark;
+      if (rememberKeyInput) rememberKeyInput.checked = profile.rememberApiKey;
+      if (customModelsInput) customModelsInput.value = profile.customModels.join(', ');
+    }
     this.updateBaseUrlHint();
-    if (rememberKeyInput) {
-      rememberKeyInput.checked = settings.rememberApiKey;
-    }
-    if (customModelsInput) {
-      customModelsInput.value = (settings.api.customModels || []).join(', ');
-    }
-    const customModels = settings.api.customModels || [];
-    if (customModels.length > 0) {
+  }
+
+  /** Refresh the header model dropdown from the profile being edited. */
+  private async restoreModelList(profile: ApiProfile | null): Promise<void> {
+    if (!profile) return;
+    if (profile.customModels.length > 0) {
       // Custom models take precedence: show them without querying the endpoint
       if (this.availableModels.length === 0) {
-        this.availableModels = customModels;
-        this.populateModelSelect(customModels);
+        this.availableModels = profile.customModels;
+        this.populateModelSelect(this.availableModels);
       }
       return;
     }
-
     // If we have baseUrl and apiKey, auto-fetch models (only if list is empty)
-    if (baseUrlInput.value && apiKeyInput.value && this.availableModels.length === 0 &&
-        await ensureEndpointPermission(baseUrlInput.value, false)) {
-      await this.fetchModels();
+    if (profile.baseUrl && profile.apiKey && this.availableModels.length === 0 &&
+        await ensureEndpointPermission(profile.baseUrl, false)) {
+      await this.fetchModels(profile);
     }
   }
 
   /**
    * Save settings
    */
-  private async saveSettings(): Promise<void> {
-    const providerSelect = document.getElementById('api-provider') as HTMLSelectElement;
-    const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
-    const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
-    const rememberKeyInput = document.getElementById('remember-api-key') as HTMLInputElement;
-    const customModelsInput = document.getElementById('custom-models') as HTMLInputElement | null;
+  private readProfileForm(): ProfileFormValues {
+    const value = (id: string): string => (document.getElementById(id) as HTMLInputElement | null)?.value.trim() ?? '';
+    const format = document.getElementById('api-format') as HTMLSelectElement | null;
+    const remember = document.getElementById('remember-api-key') as HTMLInputElement | null;
+    return {
+      format: (format?.value as ApiFormat) || 'openai-chat',
+      remark: value('profile-remark').slice(0, 80),
+      baseUrl: value('base-url'),
+      apiKey: value('api-key'),
+      customModels: value('custom-models'),
+      rememberApiKey: remember?.checked ?? false
+    };
+  }
 
-    const settings = await StorageService.getSettings();
+  /** Find the profile being edited, or create one on save when adding. */
+  private resolveTargetProfile(settings: AppSettings, format: ApiFormat): ApiProfile | null {
+    const existing = settings.profiles.find(item => item.id === this.editingProfileId);
+    if (existing) return existing;
+    if (settings.profiles.length >= LIMITS.MAX_API_PROFILES) {
+      this.showError(`最多支持 ${LIMITS.MAX_API_PROFILES} 个 API 配置`);
+      return null;
+    }
+    const profile = createProfile(format);
+    settings.profiles.push(profile);
+    if (!settings.activeProfileId) settings.activeProfileId = profile.id;
+    this.editingProfileId = profile.id;
+    return profile;
+  }
+
+  private applyFormToProfile(profile: ApiProfile, values: ProfileFormValues, baseUrl: string, isActive: boolean): void {
+    profile.format = values.format;
+    profile.baseUrl = baseUrl;
+    profile.apiKey = values.apiKey;
+    profile.customModels = parseCustomModels(values.customModels);
+    profile.rememberApiKey = values.rememberApiKey;
+    profile.remark = values.remark;
+    const selectedModel = this.headerModelSelect.value;
+    if (isActive && selectedModel) {
+      profile.model = selectedModel;
+    }
+  }
+
+  /** Rebuild the API service and header model list for the active profile. */
+  private async syncActiveProfileServices(profile: ApiProfile): Promise<void> {
+    this.apiService = profile.apiKey ? new APIService(profile) : null;
+    this.availableModels = profile.customModels;
+    if (profile.customModels.length > 0) {
+      // Custom models take precedence: populate the dropdown from the saved
+      // list directly and never query the endpoint's /models route.
+      this.populateModelSelect(this.availableModels);
+      return;
+    }
+    // After saving, trigger model fetch and select first model automatically
+    try {
+      await this.fetchModels(profile);
+    } catch (error) {
+      // Settings are already persisted; a failed model fetch must not
+      // leave the editor open as if the save failed.
+      console.error('Failed to fetch models after save:', error);
+    }
+    this.populateModelSelect(this.availableModels);
+  }
+
+  private async saveSettings(): Promise<void> {
+    const values = this.readProfileForm();
+    if (!values.apiKey) { this.showError('请输入 API 密钥'); return; }
 
     let baseUrl: string;
     try {
-      baseUrl = normalizeBaseUrl(baseUrlInput.value);
+      baseUrl = normalizeBaseUrl(values.baseUrl);
       if (!await ensureEndpointPermission(baseUrl, true)) {
-        this.showTestResult(false, '未授予该 API 域名的访问权限');
+        this.showError('未授予该 API 域名的访问权限');
         return;
       }
     } catch (error) {
-      this.showTestResult(false, error instanceof Error ? error.message : 'API 端点无效');
+      this.showError(error instanceof Error ? error.message : 'API 端点无效');
       return;
     }
 
-    settings.api.provider = providerSelect.value as 'openai' | 'anthropic';
-    settings.api.baseUrl = baseUrl;
-    settings.api.apiKey = apiKeyInput.value.trim();
-    settings.api.customModels = parseCustomModels(customModelsInput?.value ?? '');
-    settings.rememberApiKey = rememberKeyInput.checked;
+    const settings = await StorageService.getSettings();
+    const profile = this.resolveTargetProfile(settings, values.format);
+    if (!profile) return;
 
-    // Update API service with currently selected model (if any)
-    const selectedModel = this.headerModelSelect.value;
-    if (selectedModel) {
-      settings.api.model = selectedModel;
-    }
+    const isActive = settings.activeProfileId === profile.id;
+    this.applyFormToProfile(profile, values, baseUrl, isActive);
 
     await StorageService.saveSettings(settings);
+    this.populateProfileSelects(settings);
+    if (isActive) await this.syncActiveProfileServices(profile);
 
-    if (settings.api.apiKey) {
-      this.apiService = new APIService(settings.api);
-    } else {
-      this.apiService = null;
-    }
-
-    if (settings.api.customModels.length > 0) {
-      // Custom models take precedence: populate the dropdown from the saved
-      // list directly and never query the endpoint's /models route.
-      this.availableModels = settings.api.customModels;
-      await this.populateModelSelect(this.availableModels);
-    } else {
-      // After saving, trigger model fetch and select first model automatically
-      await this.fetchModels();
-
-      // Select the first model automatically if available
-      await this.populateModelSelect(this.availableModels);
-    }
-
-    // Update UI language
-    I18nService.setLanguage(settings.language);
-    this.updateUILanguage();
-    this.applyTheme(settings.theme);
-
-    this.closeSettings();
+    this.closeProfileEditor();
     this.showSuccess(I18nService.t('settings.saved'));
-  }
-
-  /**
-   * Test API connection
-   */
-  private async testConnection(): Promise<void> {
-    const providerSelect = document.getElementById('api-provider') as HTMLSelectElement;
-    const baseUrlInput = document.getElementById('base-url') as HTMLInputElement;
-    const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
-
-    const provider = providerSelect.value as 'openai' | 'anthropic';
-    let baseUrl: string;
-    const apiKey = apiKeyInput.value.trim();
-
-    // Validation
-    if (!apiKey) {
-      this.showTestResult(false, '请输入 API 密钥');
-      return;
-    }
-
-    // Show loading state
-    this.testConnectionBtn.disabled = true;
-    this.testConnectionBtn.classList.add('loading');
-    this.testResult.classList.add('hidden');
-
-    try {
-      baseUrl = normalizeBaseUrl(baseUrlInput.value);
-      if (!await ensureEndpointPermission(baseUrl, true)) {
-        throw new Error('未授予该 API 域名的访问权限');
-      }
-      // Both provider formats expose GET /models. Testing it verifies the
-      // endpoint and key without depending on any particular model being
-      // available — gateways answer "no channel for model X" only after
-      // auth succeeds, so a model-specific test conflates two different
-      // problems.
-      const headers: Record<string, string> = provider === 'openai'
-        ? { 'Authorization': `Bearer ${apiKey}` }
-        : {
-            'x-api-key': apiKey,
-            'Authorization': `Bearer ${apiKey}`,
-            'anthropic-version': '2023-06-01'
-          };
-      const response = await fetch(`${baseUrl}/models`, { method: 'GET', headers });
-
-      // A 200 response whose body is an HTML page means the URL points at
-      // a website (or gateway UI), not the API — treat it as a failure.
-      const contentType = response.headers.get('content-type') || '';
-      if (response.ok && contentType.includes('text/html')) {
-        this.showTestResult(false, I18nService.t('msg.htmlResponse'));
-      } else if (response.ok) {
-        this.showTestResult(true, '连接成功！API 配置正确');
-      } else {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.error?.message || errorData.message || `HTTP ${response.status}`;
-        this.showTestResult(false, `连接失败: ${errorMessage}`);
-      }
-    } catch (error) {
-      console.error('Test connection failed:', error);
-      const message = error instanceof Error ? error.message : '未知错误';
-      this.showTestResult(false, `连接失败: ${message}`);
-    } finally {
-      // Reset button state
-      this.testConnectionBtn.disabled = false;
-      this.testConnectionBtn.classList.remove('loading');
-    }
-  }
-
-  /**
-   * Show test connection result
-   */
-  private showTestResult(success: boolean, message: string): void {
-    this.testResult.textContent = message;
-    this.testResult.className = `test-result ${success ? 'success' : 'error'}`;
   }
 
   /**
@@ -3490,6 +3700,7 @@ Instructions:
       'message-input': 'app.placeholder',
       'settings-title': 'settings.title',
       'label-api-provider': 'settings.apiProvider',
+      'label-remark': 'settings.remark',
       'label-base-url': 'settings.baseUrl',
       'label-api-key': 'settings.apiKey',
       'label-custom-models': 'settings.customModels',
@@ -3508,7 +3719,6 @@ Instructions:
       'label-remember-key': 'label.rememberKey',
       'warning-title': 'label.warningTitle',
       'warning-text': 'label.warningText',
-      'test-text': 'label.testConnection',
       'quick-summarize': 'label.summarize',
       'quick-explain': 'label.explain',
       'quick-translate': 'label.translate'
@@ -3525,14 +3735,6 @@ Instructions:
       }
     });
 
-    // Update <select> option text for provider names
-    const apiProvider = document.getElementById('api-provider') as HTMLSelectElement;
-    if (apiProvider) {
-      for (const option of apiProvider.options) {
-        if (option.value === 'openai') option.textContent = I18nService.t('provider.openai');
-        if (option.value === 'anthropic') option.textContent = I18nService.t('provider.anthropic');
-      }
-    }
     // Update button tooltips
     const settingsBtn = document.getElementById('settings-btn');
     const clearBtn = document.getElementById('clear-btn');

@@ -11,24 +11,34 @@ import {
 describe('sanitizeAppSettings', () => {
   test('normalizes malformed persisted values to safe defaults', () => {
     const settings = sanitizeAppSettings({
-      api: {
-        provider: 'unknown',
-        baseUrl: 'javascript:alert(1)',
-        model: '  safe-model  ',
-        customModels: [' m1 ', 42, 'm1', 'm2']
-      },
+      profiles: [{ id: 'p1', format: 'invalid', baseUrl: 'javascript:alert(1)', model: '  safe-model  ', customModels: [' m1 ', 42, 'm1', 'm2'], apiKey: '', rememberApiKey: false, remark: '' }], activeProfileId: 'p1',
       language: 'fr',
       theme: 'neon',
-      rememberApiKey: 'yes'
     });
 
-    expect(settings.api.provider).toBe('openai');
-    expect(settings.api.baseUrl).toBe('https://api.openai.com/v1');
-    expect(settings.api.model).toBe('safe-model');
-    expect(settings.api.customModels).toEqual(['m1', 'm2']);
+    expect(settings.profiles[0].format).toBe('openai-chat');
+    expect(settings.profiles[0].baseUrl).toBe('https://api.openai.com/v1');
+    expect(settings.profiles[0].model).toBe('safe-model');
+    expect(settings.profiles[0].customModels).toEqual(['m1', 'm2']);
     expect(settings.language).toBe('en');
     expect(settings.theme).toBe('auto');
-    expect(settings.rememberApiKey).toBe(false);
+  });
+
+  test('caps API profiles at ten and keeps a valid active profile', () => {
+    const profiles = Array.from({ length: 12 }, (_, index) => ({
+      id: `p${index}`,
+      format: 'openai-chat',
+      baseUrl: 'https://api.example.com/v1',
+      apiKey: '',
+      model: '',
+      customModels: [],
+      rememberApiKey: false,
+      remark: `配置 ${index}`
+    }));
+    const settings = sanitizeAppSettings({ profiles, activeProfileId: 'p11', language: 'zh', theme: 'auto' });
+
+    expect(settings.profiles).toHaveLength(10);
+    expect(settings.activeProfileId).toBe('p0');
   });
 });
 

@@ -8,7 +8,7 @@
 
 页知是一款 Chromium 浏览器扩展，能够读取您正在浏览的页面（或选中的文字），让您随时向 AI 提问 —— 总结、解释、翻译，或者随意提问。无需复制粘贴，无需切换窗口。
 
-基于 Manifest V3 构建，纯 TypeScript + CSS。支持任意 OpenAI 兼容或 Anthropic 兼容的 API。
+基于 Manifest V3 构建，纯 TypeScript + CSS。支持任意实现 `openai-chat`、`openai-responses` 或 `anthropic-messages` 协议的 API。
 
 **产品名：** PageMind  
 **中文名：** 页知
@@ -23,10 +23,9 @@
 - **选中文字问答** — 在任意页面选中文字，右键点击"询问页知"，获取针对该文字的 AI 回答。
 - **快捷操作** — 一键总结、解释、翻译当前页面。
 
-### API 与提供商
+### API 格式
 
-- **OpenAI 兼容格式** — 支持 OpenAI、Azure OpenAI、DashScope（通义千问）、Ollama、LocalAI 等任何暴露 OpenAI 兼容 `/v1/chat/completions` 端点的服务。
-- **Anthropic 兼容格式** — 支持 Anthropic Claude、AWS Bedrock 等使用 Anthropic Messages API 格式的服务。
+- **协议驱动** — 不绑定供应商，用户输入 API 端点和密钥；支持上述三种协议。
 - **自定义 Base URL** — 指向任意自定义端点。
 - **模型发现** — 从 API 端点获取可用模型列表，从下拉框中选择。
 
@@ -80,7 +79,7 @@
 
 ### 首次配置
 
-0.1.1 使用新的存储协议，不兼容旧版本设置。升级后请重新输入 API 密钥；默认仅保存在当前浏览器会话中。
+0.1.2 使用多 API 配置协议；默认仅保存在当前浏览器会话中。支持任意实现 `openai-chat`、`openai-responses` 或 `anthropic-messages` 协议的服务，端点可自行填写。
 
 1. 点击工具栏中的页知图标打开侧边栏。
 2. 点击**设置**（齿轮图标）。

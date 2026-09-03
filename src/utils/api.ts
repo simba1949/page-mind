@@ -1,5 +1,4 @@
 import { APIConfig, ChatMessage, ChatRequest, ChatResponse } from '../types';
-import { API_PRESETS } from '../utils/constants';
 import { LIMITS } from '../utils/constants';
 
 /**
@@ -13,7 +12,7 @@ export class APIService {
   constructor(config: APIConfig) {
     this.config = {
       ...config,
-      baseUrl: this.normalizeBaseUrl(config.baseUrl || API_PRESETS[config.provider].baseUrl)
+      baseUrl: this.normalizeBaseUrl(config.baseUrl || (config.format === 'anthropic-messages' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1'))
     };
   }
 
@@ -54,15 +53,15 @@ export class APIService {
     }
 
     // Use custom baseUrl if provided, otherwise use preset
-    const baseUrl = this.config.baseUrl || API_PRESETS[this.config.provider].baseUrl;
+    const baseUrl = this.config.baseUrl || (this.config.format === 'anthropic-messages' ? 'https://api.anthropic.com/v1' : 'https://api.openai.com/v1');
 
     try {
-      if (this.config.provider === 'openai') {
+      if (this.config.format !== 'anthropic-messages') {
         return await this.chatWithOpenAI(messages, baseUrl);
-      } else if (this.config.provider === 'anthropic') {
+      } else if (this.config.format === 'anthropic-messages') {
         return await this.chatWithAnthropic(messages, baseUrl);
       } else {
-        throw new Error(`Unsupported provider: ${this.config.provider}`);
+        throw new Error(`Unsupported API format: ${this.config.format}`);
       }
     } catch (error) {
       console.error('API request failed:', error);

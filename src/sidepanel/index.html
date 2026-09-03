@@ -18,6 +18,9 @@
         </button>
       </div>
       <div class="header-right">
+        <select id="profile-select" class="model-select" title="选择 API 配置" aria-label="选择 API 配置">
+          <option value="">未配置 API</option>
+        </select>
         <select id="model-select" class="model-select" title="选择模型" aria-label="选择模型">
           <option value="">选择模型</option>
         </select>
@@ -150,12 +153,63 @@
         </div>
 
         <div class="settings-body">
+          <div class="setting-group api-profile-manager">
+            <div class="api-profile-header">
+              <div class="api-profile-heading">
+                <label>API 配置</label>
+                <small class="profile-limit-hint">最多可保存 10 个</small>
+              </div>
+              <button id="add-profile" type="button" class="add-profile-btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                新增
+              </button>
+            </div>
+            <div class="api-profile-table-wrap">
+              <table class="api-profile-table" aria-label="API 配置列表">
+                <thead>
+                  <tr>
+                    <th scope="col">名称</th>
+                    <th scope="col" class="api-profile-actions-heading">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="api-profile-list"></tbody>
+              </table>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Profile Editor Modal -->
+    <div id="profile-editor" class="settings-panel profile-editor-modal hidden" role="dialog" aria-modal="true" aria-labelledby="profile-editor-title">
+      <div class="settings-content">
+        <div class="settings-header">
+          <h2 id="profile-editor-title">新增 API</h2>
+          <button id="close-profile-editor" class="close-btn" aria-label="关闭编辑">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="settings-body">
           <div class="setting-group">
             <label id="label-api-provider">API 格式</label>
-            <select id="api-provider">
-              <option value="openai">{provider.openai}</option>
-              <option value="anthropic">{provider.anthropic}</option>
+            <select id="api-format">
+              <option value="openai-chat">OpenAI Chat</option>
+              <option value="openai-responses">OpenAI Responses</option>
+              <option value="anthropic-messages">Anthropic Messages</option>
             </select>
+          </div>
+
+          <div class="setting-group">
+            <label id="label-remark">名称</label>
+            <input type="text" id="profile-remark" maxlength="80" placeholder="例如：工作账号">
           </div>
 
           <div id="base-url-group" class="setting-group">
@@ -164,6 +218,7 @@
               type="url"
               id="base-url"
               placeholder="https://api.openai.com/v1"
+              maxlength="2048"
               autocomplete="off"
               spellcheck="false"
             >
@@ -203,17 +258,6 @@
 取消勾选后关闭浏览器会自动清理。">?</span>
             </label>
           </div>
-          <div id="test-connection-group" class="setting-group">
-            <button id="test-connection" type="button" class="test-btn">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                <polyline points="22,4 12,14.01 9,11.01"/>
-              </svg>
-              <span id="test-text">测试连接</span>
-            </button>
-            <div id="test-result" class="test-result hidden"></div>
-          </div>
-
           <div class="setting-actions">
             <button id="save-settings" class="primary-btn">
               <span id="save-text">保存设置</span>

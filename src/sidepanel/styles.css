@@ -4,13 +4,15 @@
    ======================================== */
 
 :root {
-  /* Color System - Deep Night Theme */
-  --bg-primary: #0B0F19;
-  --bg-secondary: #121722;
-  --bg-surface: #1A2332;
-  --bg-surface-hover: #222D40;
+  /* Color System - Deep Night Theme
+     Night Ink: near-black neutral surfaces carry the depth; blue is
+     reserved for interactive light (accents, states), not surface tint */
+  --bg-primary: #0B0D12;
+  --bg-secondary: #12151C;
+  --bg-surface: #171B23;
+  --bg-surface-hover: #1F242E;
   --bg-user-msg: #1E3A5F;
-  --bg-ai-msg: #1A2332;
+  --bg-ai-msg: #171B23;
   /* Soft blue tint over the dark background — same family as the muted
      AI surface, instead of a saturated gradient that clashes with it */
   --user-msg-start: rgba(74, 158, 255, 0.18);
@@ -27,15 +29,17 @@
   --accent-blue-glow: rgba(74, 158, 255, 0.28);
   --accent-green: #34D399;
   --accent-green-light: rgba(52, 211, 153, 0.1);
+  --accent-red: #F87171;
+  --accent-red-light: rgba(248, 113, 113, 0.12);
 
   /* Text Colors */
   --text-primary: #F0F2F8;
-  --text-secondary: #8B95A5;
-  --text-muted: #5A6478;
+  --text-secondary: #98A2B4;
+  --text-muted: #727D90;
 
   /* Borders */
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.1);
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-default: rgba(255, 255, 255, 0.14);
   --border-accent: rgba(229, 161, 74, 0.3);
 
   /* Spacing */
@@ -86,6 +90,8 @@
   --accent-blue-glow: rgba(59, 130, 246, 0.24);
   --accent-green: #16865d;
   --accent-green-light: rgba(22, 134, 93, 0.08);
+  --accent-red: #b42318;
+  --accent-red-light: rgba(180, 35, 24, 0.08);
   --text-primary: #152033;
   --text-secondary: #566176;
   --text-muted: #7d8798;
@@ -102,6 +108,12 @@
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+/* Form controls don't inherit the page font by default (UA stylesheets),
+   which on Windows drops CJK text into a serif fallback. */
+button, input, select, textarea {
+  font-family: inherit;
 }
 
 body {
@@ -1147,6 +1159,11 @@ body {
   backdrop-filter: blur(8px);
 }
 
+/* The profile editor layers on top of the settings list modal */
+.profile-editor-modal {
+  z-index: 1010;
+}
+
 .settings-panel.hidden {
   display: none;
 }
@@ -1198,6 +1215,231 @@ body {
   padding: var(--space-lg);
 }
 
+/* API 配置列表：标题行（说明 + 新增按钮） */
+.api-profile-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.api-profile-heading { min-width: 0; }
+
+.api-profile-heading label { margin-bottom: 0; }
+
+.profile-limit-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.add-profile-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  border: 1px solid var(--accent-blue-deep);
+  border-radius: var(--radius-sm);
+  background: var(--accent-blue-deep);
+  color: var(--bg-surface);
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+:root:not([data-theme="light"]) .add-profile-btn {
+  color: var(--bg-primary);
+}
+
+.add-profile-btn:hover {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.add-profile-btn:active {
+  transform: translateY(1px);
+}
+
+.add-profile-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
+}
+
+.api-profile-table-wrap {
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.api-profile-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.api-profile-table th,
+.api-profile-table td {
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.api-profile-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.api-profile-table th:nth-child(1) { width: 64%; }
+.api-profile-table th:nth-child(2) { width: 36%; }
+
+.api-profile-table tbody td {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.api-profile-table tbody tr:last-child td { border-bottom: 0; }
+
+.api-profile-item {
+  transition: background-color 0.15s ease;
+}
+
+.api-profile-item:hover td {
+  background: var(--bg-surface-hover);
+}
+
+.api-profile-item.active td {
+  background: var(--accent-blue-light);
+}
+
+.api-profile-item.editing td {
+  box-shadow: inset 2px 0 0 var(--accent-blue);
+}
+
+.api-profile-name-cell {
+  min-width: 0;
+}
+
+.api-profile-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.api-profile-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.api-profile-name-caption {
+  display: block;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.api-profile-item.active .api-profile-name-text { color: var(--accent-blue-deep); }
+
+.api-profile-active-tag {
+  flex-shrink: 0;
+  padding: 0 7px;
+  border: 1px solid var(--accent-blue-glow);
+  border-radius: var(--radius-full);
+  background: var(--accent-blue-light);
+  color: var(--accent-blue-deep);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.api-profile-table th.api-profile-actions-heading,
+.api-profile-table td.api-profile-actions-cell { text-align: right; }
+.api-profile-actions-cell { white-space: nowrap; }
+.api-profile-actions-cell .api-profile-action + .api-profile-action { margin-left: 6px; }
+
+.api-profile-action {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.api-profile-action:hover {
+  background: var(--accent-blue-light);
+  color: var(--accent-blue);
+}
+
+.api-profile-action:focus-visible {
+  outline: 1px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.api-profile-action:active {
+  transform: translateY(1px);
+}
+
+.api-profile-action.danger { color: var(--accent-red); }
+.api-profile-action.danger:hover {
+  background: var(--accent-red-light);
+}
+
+.api-profile-table td.api-profile-empty { padding: 0; }
+
+.api-profile-empty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 30px 16px 32px;
+  text-align: center;
+}
+
+.api-profile-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 5px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+}
+
+.api-profile-empty-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); }
+.api-profile-empty-hint { font-size: 12px; color: var(--text-muted); }
+
+
 .hidden {
   display: none !important;
 }
@@ -1225,6 +1467,7 @@ body {
   background: var(--bg-surface);
   color: var(--text-primary);
   font-family: inherit;
+  font-size: 13px;
   font-size: 13px;
   transition: all 0.15s ease;
 }
@@ -1404,6 +1647,9 @@ body {
   background: linear-gradient(135deg, var(--accent-warm), #D4913A);
   color: white;
   border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
   font-family: inherit;
   font-size: 14px;
   font-weight: 600;

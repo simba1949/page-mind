@@ -1,16 +1,33 @@
 // Configuration types
-export interface APIConfig {
-  provider: 'openai' | 'anthropic';
+export type ApiFormat = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+export interface ApiProfile {
+  id: string;
+  format: ApiFormat;
   apiKey: string;
   model: string;
-  baseUrl?: string; // Custom base URL for compatible APIs
-  customModels?: string[]; // Manual model list; when set, the model dropdown uses it instead of querying the API
+  baseUrl: string;
+  customModels: string[];
+  maxTokens?: number;
+  temperature?: number;
+  rememberApiKey: boolean;
+  remark: string;
+}
+
+/** Wire-level API configuration used by the standalone service. */
+export interface APIConfig {
+  format: ApiFormat;
+  apiKey: string;
+  model: string;
+  baseUrl?: string;
+  customModels?: string[];
   maxTokens?: number;
   temperature?: number;
 }
 
 export interface AppSettings {
-  api: APIConfig;
+  profiles: ApiProfile[];
+  activeProfileId: string | null;
   language: 'en' | 'zh';
   theme: 'light' | 'dark' | 'auto';
 }

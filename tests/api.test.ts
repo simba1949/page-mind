@@ -3,7 +3,7 @@ import { APIConfig } from '../src/types';
 import { installFetchMock } from './helpers/chrome';
 
 const config: APIConfig = {
-  provider: 'openai',
+  format: 'openai-chat',
   apiKey: 'test-api-key',
   model: 'gpt-3.5-turbo',
   maxTokens: 1000,

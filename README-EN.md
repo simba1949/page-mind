@@ -23,10 +23,9 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 - **Selection Q&A** — Select text on any page, right-click, and choose "Ask PageMind" to get answers about that specific text.
 - **Quick actions** — One-click shortcuts: Summarize, Explain, Translate the current page.
 
-### API & Providers
+### API formats
 
-- **OpenAI-compatible format** — Works with OpenAI, Azure OpenAI, DashScope (Tongyi Qianwen), Ollama, LocalAI, and any service that exposes an OpenAI-compatible `/v1/chat/completions` endpoint.
-- **Anthropic-compatible format** — Works with Anthropic Claude, AWS Bedrock, and others that use the Anthropic Messages API format.
+- **Protocol-driven** — No vendor lock-in: enter any endpoint implementing `openai-chat`, `openai-responses`, or `anthropic-messages`.
 - **Custom Base URL** — Point to any custom endpoint.
 - **Model discovery** — Fetches available models from the API endpoint; you choose one from a dropdown.
 
@@ -80,7 +79,7 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 
 ### First-time setup
 
-Version 0.1.1 uses a new storage contract and does not migrate settings from older versions. After upgrading, enter your API key again; by default it is kept only for the current browser session.
+Version 0.1.2 uses a multi-profile storage contract; keys are session-only by default. Any service implementing `openai-chat`, `openai-responses`, or `anthropic-messages` is supported, with a user-provided endpoint.
 
 1. Click the PageMind icon in the toolbar to open the side panel.
 2. Click the **Settings** (gear) icon.

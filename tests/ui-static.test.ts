@@ -57,8 +57,8 @@ describe('styles.css: light theme keeps a single accent family', () => {
 });
 
 describe('manifest.json: least-privilege permission surface', () => {
-  test('uses the 0.1.1 storage/module contract', () => {
-    expect(manifest.version).toBe('0.1.1');
+  test('uses the 0.1.2 storage/module contract', () => {
+    expect(manifest.version).toBe('0.1.2');
   });
 
   test('requests exactly the expected permissions', () => {
@@ -165,7 +165,7 @@ describe('index.html: composer and settings markup hygiene', () => {
   });
 
   test('offers API provider and endpoint settings', () => {
-    expect(html).toContain('id="api-provider"');
+    expect(html).toContain('id="api-format"');
     expect(html).toContain('id="base-url"');
   });
 

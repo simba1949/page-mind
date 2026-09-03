@@ -23,41 +23,27 @@ describe('side panel credential storage', () => {
       'encryption_key',
       'settings_schema_version'
     ]);
-    expect(chromeMock.storage.session.remove).toHaveBeenCalledWith('session_api_key');
-    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: 1 });
+    expect(chromeMock.storage.session.remove).toHaveBeenCalledWith(['session_api_keys', 'session_api_key']);
+    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: 2 });
   });
 
   test('encrypts remembered API keys before persistent storage', async () => {
-    await StorageService.saveSettings({
-      api: { provider: 'openai', apiKey: 'secret-key', model: 'gpt-4o' },
-      language: 'zh',
-      theme: 'auto',
-      rememberApiKey: true
-    });
+    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'secret-key', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'auto' });
 
-    const savedSettings = chromeMock.storage.local.set.mock.calls
-      .map(([value]) => value?.app_settings)
-      .find(Boolean) as { api: { apiKey: string } };
+    const savedSettings = chromeMock.storage.local.set.mock.calls.map(([value]) => value?.app_settings).find(Boolean) as { profiles: Array<{ apiKey: string }> };
 
-    expect(savedSettings.api.apiKey).toMatch(/^enc:v1:/);
-    expect(savedSettings.api.apiKey).not.toContain('secret-key');
+    expect(savedSettings.profiles[0].apiKey).toMatch(/^enc:v1:/);
+    expect(savedSettings.profiles[0].apiKey).not.toContain('secret-key');
   });
 
   test('keeps non-remembered API keys in session storage only', async () => {
-    await StorageService.saveSettings({
-      api: { provider: 'openai', apiKey: 'session-secret', model: 'gpt-4o' },
-      language: 'zh',
-      theme: 'auto',
-      rememberApiKey: false
-    });
+    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'session-secret', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: false, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'auto' });
 
-    const savedSettings = chromeMock.storage.local.set.mock.calls
-      .map(([value]) => value?.app_settings)
-      .find(Boolean) as { api: { apiKey: string } };
+    const savedSettings = chromeMock.storage.local.set.mock.calls.map(([value]) => value?.app_settings).find(Boolean) as { profiles: Array<{ apiKey: string }> };
 
-    expect(savedSettings.api.apiKey).toBe('');
+    expect(savedSettings.profiles[0].apiKey).toBe('');
     expect(chromeMock.storage.session.set).toHaveBeenCalledWith({
-      session_api_key: 'session-secret'
+      session_api_keys: { p1: 'session-secret' }
     });
   });
 
@@ -74,18 +60,12 @@ describe('side panel credential storage', () => {
       return Promise.resolve();
     });
 
-    await StorageService.saveSettings({
-      api: { provider: 'openai', apiKey: 'round-trip-secret', model: 'gpt-4o' },
-      language: 'zh',
-      theme: 'auto',
-      rememberApiKey: true
-    });
+    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'round-trip-secret', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'auto' });
 
     await expect(StorageService.getSettings()).resolves.toMatchObject({
-      api: { apiKey: 'round-trip-secret' },
-      rememberApiKey: true
+      profiles: [{ apiKey: 'round-trip-secret' }]
     });
-    expect((localStore.app_settings as { api: { apiKey: string } }).api.apiKey)
+    expect((localStore.app_settings as { profiles: Array<{ apiKey: string }> }).profiles[0].apiKey)
       .not.toBe('round-trip-secret');
   });
 });
