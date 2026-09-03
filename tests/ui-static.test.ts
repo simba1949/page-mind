@@ -10,6 +10,7 @@ const root = join(__dirname, '..');
 const css = readFileSync(join(root, 'src', 'sidepanel', 'styles.css'), 'utf8');
 const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
 const html = readFileSync(join(root, 'src', 'sidepanel', 'index.html'), 'utf8');
+const sidepanelTs = readFileSync(join(root, 'src', 'sidepanel', 'sidepanel.ts'), 'utf8');
 
 /** The first CSS rule block containing `selector`, braces included. */
 const ruleBlock = (source: string, selector: string): string => {
@@ -63,7 +64,7 @@ describe('manifest.json: least-privilege permission surface', () => {
     ].sort());
   });
 
-  test('requires host access only for the two API endpoints', () => {
+  test('requires host access only for configured inference endpoints', () => {
     expect(manifest.host_permissions).toEqual([
       'https://api.openai.com/*',
       'https://api.anthropic.com/*'
@@ -152,6 +153,22 @@ describe('index.html: composer and settings markup hygiene', () => {
   test('stores the API key in a password field flagged new-password', () => {
     expect(html).toContain('type="password"');
     expect(html).toContain('autocomplete="new-password"');
+  });
+
+  test('offers API provider and endpoint settings', () => {
+    expect(html).toContain('id="api-provider"');
+    expect(html).toContain('id="base-url"');
+  });
+
+  test('autofocuses the composer when the side panel opens', () => {
+    expect(html).toMatch(/id="message-input"[\s\S]*autofocus/);
+  });
+
+  test('keeps a paste shortcut in the composer when panel focus is lost', () => {
+    expect(sidepanelTs).toContain("event.key.toLowerCase() !== 'v'");
+    expect(sidepanelTs).toContain("this.messageInput.setRangeText(text, start, end, 'end')");
+    expect(sidepanelTs).toContain("this.messageInput.addEventListener('pointerdown'");
+    expect(sidepanelTs).toContain('window.focus()');
   });
 
   test('the file picker accepts no native executables', () => {

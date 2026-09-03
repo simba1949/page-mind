@@ -64,6 +64,29 @@ function parseDataUrl(dataUrl: string): { mime: string; data: string } | null {
 }
 
 /**
+ * Whether a model rejects a non-default `temperature`. The GPT-5 family and
+ * the o-series reasoning models error out on `temperature` (only the default
+ * is accepted), and gateways surface that as a bare 500 "Internal server
+ * error". For these we omit the parameter entirely; everything else keeps it.
+ */
+export function modelOmitsTemperature(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  return m.startsWith('gpt-5') || /^o[1-9](?:[-.]|$)/.test(m);
+}
+
+/** Turn an OpenAI-compatible HTTP failure into an actionable user message. */
+export function openAICompatibleErrorMessage(status: number, detail?: string): string {
+  if (status === 401) {
+    const upstreamDetail = detail ? `（上游返回：${detail}）` : '';
+    return `HTTP 401：API Key 鉴权失败，请检查 API Key。${upstreamDetail}`;
+  }
+  if (status >= 500) {
+    return `HTTP ${status}：${detail || '服务端错误，可能是网关或该模型渠道暂时不可用，请稍后重试或更换模型'}`;
+  }
+  return detail ? `HTTP ${status}：${detail}` : `HTTP ${status}`;
+}
+
+/**
  * OpenAI content for one message: plain text, or a mixed text + image_url
  * parts array when the message carries image attachments.
  */
@@ -1060,7 +1083,9 @@ class APIService {
       })),
       // No max_tokens cap: let the reply run to its natural end. A low cap
       // here was silently truncating long replies mid-sentence.
-      temperature: this.config.temperature,
+      ...(modelOmitsTemperature(this.config.model)
+        ? {}
+        : { temperature: this.config.temperature }),
       stream: true
     };
 
@@ -1083,7 +1108,13 @@ class APIService {
         // only non-HTML text bodies are worth surfacing verbatim.
         errorData = errorText.trimStart().startsWith('<') ? {} : { message: errorText };
       }
-      throw new Error(errorData.error?.message || errorData.message || `HTTP ${response.status}`);
+      const detail = errorData.error?.message || errorData.message;
+      // Keep the raw body in the console: gateways sometimes hide the real
+      // upstream reason there even when the JSON error field is generic.
+      console.error(`Chat request failed (HTTP ${response.status}):`, errorText);
+      // Always prefix the status so a gateway fault (5xx) is distinguishable
+      // from a config/permission problem (4xx) at a glance.
+      throw new Error(openAICompatibleErrorMessage(response.status, detail));
     }
 
     if (!response.body) {
@@ -1377,6 +1408,8 @@ const translations = {
     'msg.noEndpoint': 'Please enter the API endpoint',
     'msg.noEndpointPermission': 'Access to the API domain was not granted',
     'msg.noModels': 'No models available',
+    'msg.selectModel': 'Select a model',
+    'msg.noModelSelected': 'Please select a model',
     'btn.copy': 'Copy reply',
     'btn.copied': 'Copied',
     'btn.copyTable': 'Copy table (Markdown)',
@@ -1460,6 +1493,8 @@ const translations = {
     'msg.noEndpoint': '请输入 API 端点',
     'msg.noEndpointPermission': '未授予该 API 域名的访问权限',
     'msg.noModels': '没有可用的模型',
+    'msg.selectModel': '选择模型',
+    'msg.noModelSelected': '请选择一个模型',
     'btn.copy': '复制回复',
     'btn.copied': '已复制',
     'btn.copyTable': '复制表格（Markdown）',
@@ -1577,7 +1612,31 @@ class SidePanelController {
       await this.autoFetchModels();
       // First open: honor a selection made before the panel was opened.
       await this.autoFetchCurrentPage(true);
+      // Opening the side panel can leave keyboard focus in the browser chrome
+      // (especially from a new-tab page). Restore it to the composer only
+      // when no control inside the panel is already focused.
+      this.focusComposerIfIdle();
+      // Retry after the side-panel opening animation has settled. Chromium
+      // may reject the first focus() while the panel is still being attached.
+      window.setTimeout(() => this.focusComposerIfIdle(), 250);
     }
+  }
+
+  /** Focus the composer without stealing focus from an active panel control. */
+  private focusComposerIfIdle(): void {
+    if (!this.settingsModal.classList.contains('hidden')) return;
+    const active = document.activeElement;
+    if (!active || active === document.body || active === document.documentElement) {
+      this.activateComposer();
+    }
+  }
+
+  /** Activate the side-panel document before placing the caret in the input. */
+  private activateComposer(): void {
+    // `window.focus()` is important when the previous active element was the
+    // browser omnibox (a common state after opening a new-tab page).
+    window.focus();
+    this.messageInput.focus();
   }
 
   /**
@@ -1701,7 +1760,7 @@ class SidePanelController {
     this.quotedReply = trimmed;
     this.quoteText.textContent = trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed;
     this.quoteBar.classList.remove('hidden');
-    this.messageInput.focus();
+    this.activateComposer();
   }
 
   /** Drop the pending quote and hide its bar. Callers decide whether to
@@ -1850,7 +1909,21 @@ class SidePanelController {
    * Set up event listeners
    */
   private setupEventListeners(): void {
-    // Message sending
+    this.setupMessageEvents();
+    this.setupPromptEvents();
+    this.setupCopyEvents();
+    this.setupSettingsEvents();
+    this.setupConversationEvents();
+    this.setupClipboardEvents();
+    this.setupQuickActionEvents();
+    this.setupAppearanceEvents();
+    this.setupModalEvents();
+    this.setupRuntimeEvents();
+    this.setupContextStorageEvents();
+  }
+
+  /** Register message input and send actions. */
+  private setupMessageEvents(): void {
     this.sendBtn.addEventListener('click', () => this.sendMessage());
     this.messageInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -1861,6 +1934,10 @@ class SidePanelController {
 
     // Input validation
     this.messageInput.addEventListener('input', () => this.updateSendButton());
+  }
+
+  /** Register quick prompts rendered inside the chat area. */
+  private setupPromptEvents(): void {
     this.chatMessages.addEventListener('click', (event) => {
       const target = event.target as HTMLElement;
       const action = target.closest<HTMLButtonElement>('[data-prompt]');
@@ -1871,13 +1948,13 @@ class SidePanelController {
         // re-attaching page context when the user sends this prompt.
         this.contextDismissed = false;
         this.updateSendButton();
-        this.messageInput.focus();
+        this.activateComposer();
       }
     });
+  }
 
-    // Copy buttons inside rendered markdown (tables, code blocks). These
-    // are recreated on every streaming re-render, so listen via delegation
-    // on the container.
+  /** Register delegated copy actions for rendered markdown. */
+  private setupCopyEvents(): void {
     this.chatMessages.addEventListener('click', (event) => {
       const target = event.target as HTMLElement;
       const tableBtn = target.closest<HTMLButtonElement>('.md-table-copy');
@@ -1902,8 +1979,10 @@ class SidePanelController {
         }
       }
     });
+  }
 
-    // Settings
+  /** Register settings controls and endpoint validation feedback. */
+  private setupSettingsEvents(): void {
     this.settingsBtn.addEventListener('click', () => this.openSettings());
     this.closeSettingsBtn.addEventListener('click', () => this.closeSettings());
     this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
@@ -1919,8 +1998,10 @@ class SidePanelController {
 
     // Live-check the endpoint field and show the /v1 advisory hint if needed
     document.getElementById('base-url')?.addEventListener('input', () => this.updateBaseUrlHint());
+  }
 
-    // New chat
+  /** Register conversation navigation controls. */
+  private setupConversationEvents(): void {
     this.clearBtn.addEventListener('click', () => this.newChat());
 
     // Model selection change
@@ -1936,32 +2017,102 @@ class SidePanelController {
         this.clearQuote();
         void this.autoFetchCurrentPage();
       });
+  }
 
-    // Attachments: paste into the composer, drag & drop, file picker
-    this.messageInput.addEventListener('paste', (event) => {
-      const files = filesFromDataTransfer(event.clipboardData);
-      if (files.length > 0) {
-        event.preventDefault();
-        void this.addAttachmentFiles(files);
-      }
-    });
+  /** Register clipboard, drag/drop and file-picker behavior. */
+  private setupClipboardEvents(): void {
+    this.setupComposerFocusEvents();
+    this.setupPasteEvents();
+    this.setupDropEvents();
+    this.setupFilePickerEvents();
+  }
+
+  /** Keep the side-panel window and composer focused during pointer input. */
+  private setupComposerFocusEvents(): void {
+    this.messageInput.addEventListener('pointerdown', () => {
+      if (this.settingsModal.classList.contains('hidden')) this.activateComposer();
+    }, true);
+  }
+
+  /** Handle image/file pastes and text pastes that miss the textarea target. */
+  private setupPasteEvents(): void {
+    this.messageInput.addEventListener('paste', event => this.handleInputPaste(event));
+    document.addEventListener('keydown', event => this.handlePasteShortcut(event), true);
+    document.addEventListener('paste', event => this.handleDocumentPaste(event), true);
+  }
+
+  /** Queue pasted files and preserve normal text-paste behavior. */
+  private handleInputPaste(event: ClipboardEvent): void {
+    const files = filesFromDataTransfer(event.clipboardData);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void this.addAttachmentFiles(files);
+  }
+
+  /** Restore composer focus before a paste shortcut's default action. */
+  private handlePasteShortcut(event: KeyboardEvent): void {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'v') return;
+    if (!this.settingsModal.classList.contains('hidden')) return;
+    if (this.isEditableTarget(document.activeElement)) return;
+    this.activateComposer();
+  }
+
+  /** Insert text when a paste event targets the panel document itself. */
+  private handleDocumentPaste(event: ClipboardEvent): void {
+    if (!this.settingsModal.classList.contains('hidden')) return;
+    if (this.isEditableTarget(event.target)) return;
+    const text = event.clipboardData?.getData('text/plain');
+    if (!text) return;
+    event.preventDefault();
+    this.insertPastedText(text);
+  }
+
+  /** Identify controls where the browser should handle paste natively. */
+  private isEditableTarget(target: EventTarget | null): boolean {
+    return target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLButtonElement;
+  }
+
+  /** Insert text at the current composer selection and refresh its state. */
+  private insertPastedText(text: string): void {
+    this.activateComposer();
+    const start = this.messageInput.selectionStart ?? this.messageInput.value.length;
+    const end = this.messageInput.selectionEnd ?? start;
+    this.messageInput.setRangeText(text, start, end, 'end');
+    this.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  /** Handle files dropped onto the composer. */
+  private setupDropEvents(): void {
     const dropTarget = document.querySelector('.input-container') as HTMLElement | null;
-    if (dropTarget) {
-      dropTarget.addEventListener('dragover', (event) => event.preventDefault());
-      dropTarget.addEventListener('drop', (event: DragEvent) => {
-        event.preventDefault();
-        const files = filesFromDataTransfer(event.dataTransfer);
-        if (files.length > 0) void this.addAttachmentFiles(files);
-      });
-    }
-    this.attachBtn.addEventListener('click', () => this.fileInput.click());
-    this.fileInput.addEventListener('change', () => {
-      const files = Array.from(this.fileInput.files || []);
-      this.fileInput.value = '';
-      if (files.length > 0) void this.addAttachmentFiles(files);
-    });
+    dropTarget?.addEventListener('dragover', event => event.preventDefault());
+    dropTarget?.addEventListener('drop', event => this.handleDrop(event));
+  }
 
-    // Quick action buttons
+  /** Queue files from a drag/drop event. */
+  private handleDrop(event: DragEvent): void {
+    event.preventDefault();
+    const files = filesFromDataTransfer(event.dataTransfer);
+    if (files.length > 0) void this.addAttachmentFiles(files);
+  }
+
+  /** Handle file selection from the attachment picker. */
+  private setupFilePickerEvents(): void {
+    this.attachBtn.addEventListener('click', () => this.fileInput.click());
+    this.fileInput.addEventListener('change', () => this.handleFileSelection());
+  }
+
+  /** Queue files selected through the native picker and reset its value. */
+  private handleFileSelection(): void {
+    const files = Array.from(this.fileInput.files || []);
+    this.fileInput.value = '';
+    if (files.length > 0) void this.addAttachmentFiles(files);
+  }
+
+  /** Register the predefined summarize/explain/translate actions. */
+  private setupQuickActionEvents(): void {
     const quickActions = document.querySelectorAll('.quick-action');
     quickActions.forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -1969,8 +2120,10 @@ class SidePanelController {
         this.handleQuickAction(action);
       });
     });
+  }
 
-    // Language toggle
+  /** Register language and theme toggles. */
+  private setupAppearanceEvents(): void {
     const languageToggle = document.getElementById('language-toggle');
     if (languageToggle) {
       languageToggle.addEventListener('click', () => this.toggleLanguage());
@@ -1981,8 +2134,10 @@ class SidePanelController {
     if (themeToggle) {
       themeToggle.addEventListener('click', () => this.toggleTheme());
     }
+  }
 
-    // Close modal on outside click
+  /** Register settings modal dismissal behavior. */
+  private setupModalEvents(): void {
     this.settingsModal.addEventListener('click', (e) => {
       if (e.target === this.settingsModal) {
         this.closeSettings();
@@ -1993,7 +2148,10 @@ class SidePanelController {
         this.closeSettings();
       }
     });
+  }
 
+  /** Register messages sent from the background service worker. */
+  private setupRuntimeEvents(): void {
     // Listen for context from right-click menu
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'CONTEXT_FROM_MENU' && message.data) {
@@ -2019,8 +2177,10 @@ class SidePanelController {
         }, 1000);
       }
     });
+  }
 
-    // Also listen for storage changes (backup method)
+  /** Register the storage fallback for context-menu handoff. */
+  private setupContextStorageEvents(): void {
     chrome.storage.onChanged.addListener((changes, namespace) => {
       if (namespace === 'local' && changes['contextSelection']) {
         const newValue = changes['contextSelection'].newValue;
@@ -2052,7 +2212,7 @@ class SidePanelController {
     this.showSelectionBar(context.content);
 
     // Focus input
-    this.messageInput.focus();
+    this.activateComposer();
   }
 
   /**
@@ -2120,7 +2280,7 @@ class SidePanelController {
       this.headerModelSelect.replaceChildren();
       const placeholder = document.createElement('option');
       placeholder.value = '';
-      placeholder.textContent = '选择模型';
+      placeholder.textContent = I18nService.t('msg.selectModel');
       this.headerModelSelect.appendChild(placeholder);
       this.headerModelSelect.disabled = true;
     }
@@ -2155,7 +2315,7 @@ class SidePanelController {
 
         // Show a prompt to the user
         this.messageInput.placeholder = `询问关于选中的文字: "${pendingContext.content.substring(0, 30)}..."`;
-        this.messageInput.focus();
+        this.activateComposer();
 
         // Clear the pending context
         await chrome.storage.local.remove('contextSelection');
@@ -2404,7 +2564,7 @@ class SidePanelController {
       this.isSending = false;
       this.chatMessages.setAttribute('aria-busy', 'false');
       this.updateSendButton();
-      this.messageInput.focus();
+      this.activateComposer();
     }
   }
 
@@ -2444,7 +2604,8 @@ class SidePanelController {
       content: userMessage.quote
         ? `The user is quoting part of an earlier reply and asking about it.\n\n=== QUOTED REPLY ===\n${userMessage.quote}\n=== END OF QUOTE ===\n\n${currentText}`
         : currentText,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      attachments: userMessage.attachments
     });
 
     return messages;
@@ -2878,7 +3039,7 @@ Instructions:
     // Add default option
     const defaultOption = document.createElement('option');
     defaultOption.value = '';
-    defaultOption.textContent = '选择模型';
+    defaultOption.textContent = I18nService.t('msg.selectModel');
     this.headerModelSelect.appendChild(defaultOption);
 
     // Add model options
@@ -3021,7 +3182,6 @@ Instructions:
     if (customModelsInput) {
       customModelsInput.value = (settings.api.customModels || []).join(', ');
     }
-
     const customModels = settings.api.customModels || [];
     if (customModels.length > 0) {
       // Custom models take precedence: show them without querying the endpoint
@@ -3079,6 +3239,8 @@ Instructions:
 
     if (settings.api.apiKey) {
       this.apiService = new APIService(settings.api);
+    } else {
+      this.apiService = null;
     }
 
     if (settings.api.customModels.length > 0) {
@@ -3229,7 +3391,6 @@ Instructions:
         if (option.value === 'anthropic') option.textContent = I18nService.t('provider.anthropic');
       }
     }
-
     // Update button tooltips
     const settingsBtn = document.getElementById('settings-btn');
     const clearBtn = document.getElementById('clear-btn');

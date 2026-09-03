@@ -1,4 +1,43 @@
-import { createThinkSeparator, parseCustomModels, stripThinkTags } from '../src/sidepanel/sidepanel';
+import {
+  createThinkSeparator,
+  modelOmitsTemperature,
+  openAICompatibleErrorMessage,
+  parseCustomModels,
+  stripThinkTags
+} from '../src/sidepanel/sidepanel';
+
+describe('openAICompatibleErrorMessage', () => {
+  test('explains that a 401 requires checking the API key', () => {
+    const message = openAICompatibleErrorMessage(401, '请求被上游提供商阻止。');
+
+    expect(message).toContain('API Key 鉴权失败');
+    expect(message).toContain('请求被上游提供商阻止。');
+  });
+
+  test('keeps the existing gateway guidance for server errors', () => {
+    expect(openAICompatibleErrorMessage(503)).toContain('网关或该模型渠道暂时不可用');
+  });
+});
+
+describe('modelOmitsTemperature', () => {
+  test('GPT-5 family and o-series reasoning models reject temperature', () => {
+    expect(modelOmitsTemperature('gpt-5.6-luna')).toBe(true);
+    expect(modelOmitsTemperature('gpt-5')).toBe(true);
+    expect(modelOmitsTemperature('gpt-5-turbo')).toBe(true);
+    expect(modelOmitsTemperature('o1')).toBe(true);
+    expect(modelOmitsTemperature('o3-mini')).toBe(true);
+    expect(modelOmitsTemperature('O4')).toBe(true);
+  });
+
+  test('other models keep temperature', () => {
+    expect(modelOmitsTemperature('gpt-4o')).toBe(false);
+    expect(modelOmitsTemperature('gpt-3.5-turbo')).toBe(false);
+    expect(modelOmitsTemperature('claude-sonnet-5')).toBe(false);
+    // A model merely NAMED with a leading "o" is not an o-series model
+    expect(modelOmitsTemperature('openrouter/llama')).toBe(false);
+    expect(modelOmitsTemperature('')).toBe(false);
+  });
+});
 
 describe('parseCustomModels', () => {
   test('splits on commas and newlines, trims and drops empties', () => {

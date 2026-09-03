@@ -112,6 +112,7 @@
             placeholder="输入你的问题..."
             rows="1"
             maxlength="4000"
+            autofocus
             aria-label="消息"
           ></textarea>
           <button id="attach-btn" class="attach-btn" type="button" title="添加图片或文件" aria-label="添加图片或文件">
@@ -157,7 +158,7 @@
             </select>
           </div>
 
-          <div class="setting-group">
+          <div id="base-url-group" class="setting-group">
             <label id="label-base-url">API 端点</label>
             <input
               type="url"
@@ -170,7 +171,7 @@
             <small id="base-url-hint" class="help-text url-hint hidden">提示：OpenAI 兼容端点通常以 /v1 结尾（如 https://api.openai.com/v1）。</small>
           </div>
 
-          <div class="setting-group">
+          <div id="api-key-group" class="setting-group">
             <label id="label-api-key">API 密钥</label>
             <input
               type="password"
@@ -181,7 +182,7 @@
             >
           </div>
 
-          <div class="setting-group">
+          <div id="custom-models-group" class="setting-group">
             <label id="label-custom-models">自定义模型</label>
             <input
               type="text"
@@ -193,7 +194,7 @@
             <small id="help-custom-models" class="help-text">用逗号分隔多个模型 ID；填写后模型列表直接使用它们，不再从 API 获取（适用于不支持模型列表接口的 API）</small>
           </div>
 
-          <div class="setting-group checkbox-group">
+          <div id="remember-key-group" class="setting-group checkbox-group">
             <label class="checkbox-label" for="remember-api-key">
               <input type="checkbox" id="remember-api-key">
               <span id="label-remember-key">在此设备记住密钥</span>
@@ -202,7 +203,7 @@
 取消勾选后关闭浏览器会自动清理。">?</span>
             </label>
           </div>
-          <div class="setting-group">
+          <div id="test-connection-group" class="setting-group">
             <button id="test-connection" type="button" class="test-btn">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>

@@ -1198,6 +1198,10 @@ body {
   padding: var(--space-lg);
 }
 
+.hidden {
+  display: none !important;
+}
+
 .setting-group {
   margin-bottom: var(--space-lg);
 }
