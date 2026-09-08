@@ -176,9 +176,22 @@ describe('index.html: composer and settings markup hygiene', () => {
   test('keeps a paste shortcut in the composer when panel focus is lost', () => {
     expect(sidepanelTs).toContain("event.key.toLowerCase() !== 'v'");
     expect(sidepanelTs).toContain('pastePlainText(event, this.messageInput)');
-    expect(sidepanelTs).toContain("this.messageInput.addEventListener('pointerdown'");
+    expect(sidepanelTs).toContain("this.messageInput.addEventListener('click'");
+    expect(sidepanelTs).not.toContain("this.messageInput.addEventListener('pointerdown'");
     expect(sidepanelTs).not.toContain('window.focus()');
     expect(sidepanelTs).toContain('focusComposerInput(this.messageInput)');
+  });
+
+  test('surfaces chat request failures in the dialog, without raw console output', () => {
+    expect(sidepanelTs).not.toContain('Chat request failed (HTTP');
+    expect(sidepanelTs).toContain("this.showError(error instanceof Error ? error.message : I18nService.t('msg.apiError'))");
+  });
+
+  test('keeps one APIService implementation with a compatibility export', () => {
+    const utilsApi = readFileSync(join(root, 'src', 'utils', 'api.ts'), 'utf8');
+    expect((sidepanelTs.match(/export class APIService/g) ?? []).length).toBe(1);
+    expect(utilsApi).toContain("export { APIService } from '../sidepanel/sidepanel.js';");
+    expect(utilsApi).not.toContain('class APIService');
   });
 
   test('the file picker accepts no native executables', () => {

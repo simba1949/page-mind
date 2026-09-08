@@ -353,14 +353,11 @@ class BackgroundService {
    * Set up side panel behavior
    */
   private setupSidePanel(): void {
-    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
-
-    // Open side panel when user clicks the extension icon
-    chrome.action.onClicked.addListener(async (tab) => {
-      if (tab.id) {
-        await this.openSidePanel(tab.id);
-      }
-    });
+    // Let the browser handle the toolbar gesture and side-panel activation.
+    // A document-level paste handler cannot receive keys owned by the omnibox.
+    // Keep programmatic open() for context-menu and extension-page gestures.
+    void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
+      .catch(error => console.error('Failed to configure side panel:', error));
   }
 
   /**

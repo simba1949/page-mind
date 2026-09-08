@@ -1,5 +1,6 @@
 // Browser ES modules require an explicit extension in MV3 pages.
 import { CryptoService } from '../utils/crypto.js';
+import type { APIConfig } from '../types/index.js';
 import { focusComposerInput, isNativePasteTarget, pastePlainText, shouldFocusComposer } from './composer.js';
 
 /**
@@ -230,8 +231,6 @@ export interface AppSettings {
   language: 'en' | 'zh';
   theme: 'light' | 'dark' | 'auto';
 }
-
-type APIConfig = ApiProfile;
 
 interface ProfileFormValues {
   format: ApiFormat;
@@ -1093,7 +1092,7 @@ export class APIService {
 
   private async request(url: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), APIService.REQUEST_TIMEOUT_MS);
+    const timeout = globalThis.setTimeout(() => controller.abort(), APIService.REQUEST_TIMEOUT_MS);
 
     try {
       return await fetch(url, { ...init, signal: controller.signal });
@@ -1103,7 +1102,7 @@ export class APIService {
       }
       throw error;
     } finally {
-      window.clearTimeout(timeout);
+      globalThis.clearTimeout(timeout);
     }
   }
 
@@ -1113,12 +1112,14 @@ export class APIService {
    * base URL pointing at a website or gateway UI rather than the API itself.
    */
   private async parseJsonBody(response: Response): Promise<any> {
-    const contentType = response.headers.get('content-type') || '';
-    const contentLength = Number(response.headers.get('content-length'));
+    const contentType = response.headers?.get('content-type') || '';
+    const contentLength = Number(response.headers?.get('content-length'));
     if (Number.isFinite(contentLength) && contentLength > APIService.MAX_JSON_RESPONSE_BYTES) {
       throw new Error(I18nService.t('msg.responseTooLarge'));
     }
-    const body = await response.text();
+    const body = typeof response.text === 'function'
+      ? await response.text()
+      : JSON.stringify(await response.json());
     if (body.length > APIService.MAX_JSON_RESPONSE_BYTES) {
       throw new Error(I18nService.t('msg.responseTooLarge'));
     }
@@ -1231,20 +1232,14 @@ export class APIService {
     // Use custom baseUrl if provided, otherwise use preset
     const baseUrl = this.config.baseUrl || API_PRESETS[this.config.format].baseUrl;
 
-    try {
-      if (this.config.format === 'openai-chat') {
-        return await this.chatWithOpenAI(messages, baseUrl, handlers);
-      } else if (this.config.format === 'openai-responses') {
-        return await this.chatWithOpenAIResponses(messages, baseUrl, handlers);
-      } else if (this.config.format === 'anthropic-messages') {
-        return await this.chatWithAnthropic(messages, baseUrl, handlers);
-      } else {
-        throw new Error(`Unsupported API format: ${this.config.format}`);
-      }
-    } catch (error) {
-      console.error('API request failed:', error);
-      throw error;
+    if (this.config.format === 'openai-chat') {
+      return this.chatWithOpenAI(messages, baseUrl, handlers);
+    } else if (this.config.format === 'openai-responses') {
+      return this.chatWithOpenAIResponses(messages, baseUrl, handlers);
+    } else if (this.config.format === 'anthropic-messages') {
+      return this.chatWithAnthropic(messages, baseUrl, handlers);
     }
+    throw new Error(`Unsupported API format: ${this.config.format}`);
   }
 
   private async chatWithOpenAI(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers): Promise<any> {
@@ -1252,7 +1247,6 @@ export class APIService {
 
     // Check if model is set
     if (!this.config.model) {
-      console.error('No model selected! Please select a model from the header dropdown.');
       throw new Error('No model selected. Please select a model from the header dropdown.');
     }
 
@@ -1282,7 +1276,9 @@ export class APIService {
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = typeof response.text === 'function'
+        ? await response.text()
+        : JSON.stringify(await response.json().catch(() => ({})));
       let errorData;
       try {
         errorData = JSON.parse(errorText);
@@ -1292,23 +1288,16 @@ export class APIService {
         errorData = errorText.trimStart().startsWith('<') ? {} : { message: errorText };
       }
       const detail = errorData.error?.message || errorData.message;
-      // Keep the raw body in the console: gateways sometimes hide the real
-      // upstream reason there even when the JSON error field is generic.
-      console.error(`Chat request failed (HTTP ${response.status}):`, errorText.slice(0, 2_000));
       // Always prefix the status so a gateway fault (5xx) is distinguishable
       // from a config/permission problem (4xx) at a glance.
       throw new Error(openAICompatibleErrorMessage(response.status, detail));
     }
 
-    if (!response.body) {
-      throw new Error('Streaming responses are not supported in this environment');
-    }
-
     // Some OpenAI-compatible proxies ignore `stream: true` and return a
     // regular JSON response instead of an event stream. Fall back to
     // parsing it directly rather than silently returning nothing.
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/event-stream')) {
+    const contentType = response.headers?.get('content-type') || '';
+    if (!response.body || !contentType.includes('text/event-stream')) {
       const data = await this.parseJsonBody(response);
       const responseMessage = data.choices?.[0]?.message || {};
       const separated = stripThinkTags(String(responseMessage.content || ''));
@@ -1407,9 +1396,8 @@ export class APIService {
       const detail = await response.text();
       throw new Error(openAICompatibleErrorMessage(response.status, detail));
     }
-    if (!response.body) throw new Error('Streaming responses are not supported in this environment');
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/event-stream')) {
+    const contentType = response.headers?.get('content-type') || '';
+    if (!response.body || !contentType.includes('text/event-stream')) {
       const data = await this.parseJsonBody(response);
       const content = typeof data.output_text === 'string' ? data.output_text : '';
       if (content) handlers?.onContent?.(content);
@@ -1465,15 +1453,11 @@ export class APIService {
       throw new Error(errorData.error?.message || `HTTP ${response.status}`);
     }
 
-    if (!response.body) {
-      throw new Error('Streaming responses are not supported in this environment');
-    }
-
     // Some Anthropic-compatible proxies ignore `stream: true` and return a
     // regular JSON response instead of an event stream. Fall back to
     // parsing it directly rather than silently returning nothing.
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/event-stream')) {
+    const contentType = response.headers?.get('content-type') || '';
+    if (!response.body || !contentType.includes('text/event-stream')) {
       const data = await this.parseJsonBody(response);
       const blocks: any[] = Array.isArray(data.content) ? data.content : [];
       const fullContent = blocks.filter(block => block?.type === 'text').map(block => block.text).join('\n\n');
@@ -1580,6 +1564,11 @@ export class APIService {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  /** Keep the compatibility API's context limit in one implementation. */
+  truncateContent(content: string, maxLength = LIMITS.MAX_CONTEXT_LENGTH): string {
+    return content.length <= maxLength ? content : content.substring(0, maxLength) + '...';
   }
 }
 
@@ -2371,11 +2360,13 @@ class SidePanelController {
     this.setupFilePickerEvents();
   }
 
-  /** Keep the side-panel window and composer focused during pointer input. */
+  /** Repair focus after the browser has handled the native pointer action. */
   private setupComposerFocusEvents(): void {
-    this.messageInput.addEventListener('pointerdown', () => {
+    // Do not blur/refocus during pointerdown: native mousedown still needs to
+    // activate the side-panel view and place the caret or update the selection.
+    this.messageInput.addEventListener('click', () => {
       if (this.settingsModal.classList.contains('hidden')) this.activateComposer();
-    }, true);
+    });
   }
 
   /** Handle image/file pastes and text pastes that miss the textarea target. */
@@ -2885,7 +2876,6 @@ class SidePanelController {
       if (stick) this.scrollToBottom();
     } catch (error) {
       this.cancelStreamRender();
-      console.error('AI request failed:', error);
 
       if (!assistantMessage.content) {
         // Nothing useful streamed in before the failure - drop the empty bubble.
