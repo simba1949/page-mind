@@ -1272,53 +1272,43 @@ body {
   transform: none;
 }
 
+/* Connection-list style: no outer frame or header row; each row is a
+   rounded slab so the active connection reads as a card, not a grid */
 .api-profile-table-wrap {
   max-height: 280px;
   overflow-y: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
 }
+
+.api-profile-table thead { display: none; }
 
 .api-profile-table {
   width: 100%;
   border-collapse: separate;
-  border-spacing: 0;
+  border-spacing: 0 6px;
   table-layout: fixed;
   color: var(--text-primary);
   font-size: 13px;
 }
 
-.api-profile-table th,
 .api-profile-table td {
-  padding: 10px 12px;
+  padding: 9px 12px;
   text-align: left;
   vertical-align: middle;
+  background: var(--bg-surface);
 }
 
-.api-profile-table th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-default);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
+.api-profile-table td:nth-child(1) { width: 64%; }
+.api-profile-table td:nth-child(2) { width: 36%; }
+
+.api-profile-table td:first-child {
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
-.api-profile-table th:nth-child(1) { width: 64%; }
-.api-profile-table th:nth-child(2) { width: 36%; }
-
-.api-profile-table tbody td {
-  border-bottom: 1px solid var(--border-subtle);
+.api-profile-table td:last-child {
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
-.api-profile-table tbody tr:last-child td { border-bottom: 0; }
-
-.api-profile-item {
-  transition: background-color 0.15s ease;
-}
+.api-profile-item td { transition: background-color 0.15s ease; }
 
 .api-profile-item:hover td {
   background: var(--bg-surface-hover);
@@ -1328,7 +1318,7 @@ body {
   background: var(--accent-blue-light);
 }
 
-.api-profile-item.editing td {
+.api-profile-item.editing td:first-child {
   box-shadow: inset 2px 0 0 var(--accent-blue);
 }
 
@@ -1376,7 +1366,6 @@ body {
   line-height: 16px;
 }
 
-.api-profile-table th.api-profile-actions-heading,
 .api-profile-table td.api-profile-actions-cell { text-align: right; }
 .api-profile-actions-cell { white-space: nowrap; }
 .api-profile-actions-cell .api-profile-action + .api-profile-action { margin-left: 6px; }
@@ -1413,7 +1402,11 @@ body {
   background: var(--accent-red-light);
 }
 
-.api-profile-table td.api-profile-empty { padding: 0; }
+.api-profile-table td.api-profile-empty {
+  padding: 0;
+  background: transparent;
+  border: 1px dashed var(--border-default);
+}
 
 .api-profile-empty-inner {
   display: flex;

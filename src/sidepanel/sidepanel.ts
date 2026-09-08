@@ -1,5 +1,6 @@
 // Browser ES modules require an explicit extension in MV3 pages.
 import { CryptoService } from '../utils/crypto.js';
+import { focusComposerInput, isNativePasteTarget, pastePlainText, shouldFocusComposer } from './composer.js';
 
 /**
  * Side panel controller for the AI assistant interface.
@@ -1804,6 +1805,7 @@ class SidePanelController {
   private fileInput!: HTMLInputElement;
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamRenderRaf: number | null = null;
   private profileEditor!: HTMLElement;
   private closeProfileEditorBtn!: HTMLButtonElement;
   private profileEditorTitle!: HTMLElement;
@@ -1937,10 +1939,6 @@ class SidePanelController {
       // Open settings automatically, user can close it
       this.openSettings();
     } else {
-      // Auto-fetch models and current page only if credentials exist
-      await this.autoFetchModels();
-      // First open: honor a selection made before the panel was opened.
-      await this.autoFetchCurrentPage(true);
       // Opening the side panel can leave keyboard focus in the browser chrome
       // (especially from a new-tab page). Restore it to the composer only
       // when no control inside the panel is already focused.
@@ -1948,24 +1946,24 @@ class SidePanelController {
       // Retry after the side-panel opening animation has settled. Chromium
       // may reject the first focus() while the panel is still being attached.
       window.setTimeout(() => this.focusComposerIfIdle(), 250);
+      // Network requests must not delay keyboard readiness.
+      await this.autoFetchModels();
+      // First open: honor a selection made before the panel was opened.
+      await this.autoFetchCurrentPage(true);
     }
   }
 
   /** Focus the composer without stealing focus from an active panel control. */
   private focusComposerIfIdle(): void {
     if (!this.settingsModal.classList.contains('hidden')) return;
-    const active = document.activeElement;
-    if (!active || active === document.body || active === document.documentElement) {
+    if (shouldFocusComposer(this.messageInput)) {
       this.activateComposer();
     }
   }
 
-  /** Activate the side-panel document before placing the caret in the input. */
+  /** Focus the input directly, without activating the browser's tab window. */
   private activateComposer(): void {
-    // `window.focus()` is important when the previous active element was the
-    // browser omnibox (a common state after opening a new-tab page).
-    window.focus();
-    this.messageInput.focus();
+    focusComposerInput(this.messageInput);
   }
 
   /**
@@ -2389,6 +2387,7 @@ class SidePanelController {
 
   /** Queue pasted files and preserve normal text-paste behavior. */
   private handleInputPaste(event: ClipboardEvent): void {
+    if (event.defaultPrevented || !this.settingsModal.classList.contains('hidden')) return;
     const files = filesFromDataTransfer(event.clipboardData);
     if (files.length === 0) return;
     event.preventDefault();
@@ -2397,37 +2396,17 @@ class SidePanelController {
 
   /** Restore composer focus before a paste shortcut's default action. */
   private handlePasteShortcut(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.isComposing || event.altKey) return;
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'v') return;
     if (!this.settingsModal.classList.contains('hidden')) return;
-    if (this.isEditableTarget(document.activeElement)) return;
+    if (isNativePasteTarget(document.activeElement)) return;
     this.activateComposer();
   }
 
   /** Insert text when a paste event targets the panel document itself. */
   private handleDocumentPaste(event: ClipboardEvent): void {
     if (!this.settingsModal.classList.contains('hidden')) return;
-    if (this.isEditableTarget(event.target)) return;
-    const text = event.clipboardData?.getData('text/plain');
-    if (!text) return;
-    event.preventDefault();
-    this.insertPastedText(text);
-  }
-
-  /** Identify controls where the browser should handle paste natively. */
-  private isEditableTarget(target: EventTarget | null): boolean {
-    return target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
-      target instanceof HTMLButtonElement;
-  }
-
-  /** Insert text at the current composer selection and refresh its state. */
-  private insertPastedText(text: string): void {
-    this.activateComposer();
-    const start = this.messageInput.selectionStart ?? this.messageInput.value.length;
-    const end = this.messageInput.selectionEnd ?? start;
-    this.messageInput.setRangeText(text, start, end, 'end');
-    this.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+    pastePlainText(event, this.messageInput);
   }
 
   /** Handle files dropped onto the composer. */
@@ -2876,8 +2855,7 @@ class SidePanelController {
           reasoningEl.hidden = false;
           reasoningEl.open = true;
           assistantMessage.reasoning = (assistantMessage.reasoning || '') + delta;
-          reasoningBody.textContent = assistantMessage.reasoning;
-          this.scrollToBottom();
+          this.scheduleStreamRender(contentEl, reasoningBody, assistantMessage);
         },
         onContent: (delta) => {
           if (!contentStarted) {
@@ -2887,14 +2865,15 @@ class SidePanelController {
             reasoningEl.open = false;
           }
           assistantMessage.content += delta;
-          contentEl.innerHTML = renderMarkdown(assistantMessage.content);
-          this.scrollToBottom();
+          this.scheduleStreamRender(contentEl, reasoningBody, assistantMessage);
         }
       });
 
+      this.cancelStreamRender();
       // Reconcile with the final aggregated result
       assistantMessage.content = response.content || assistantMessage.content;
       assistantMessage.reasoning = response.reasoning || assistantMessage.reasoning;
+      const stick = this.isChatNearBottom();
       contentEl.innerHTML = renderMarkdown(assistantMessage.content);
       if (assistantMessage.reasoning) {
         reasoningEl.hidden = false;
@@ -2903,8 +2882,9 @@ class SidePanelController {
 
       this.messages.push(assistantMessage);
       await this.saveChatHistory();
-      this.scrollToBottom();
+      if (stick) this.scrollToBottom();
     } catch (error) {
+      this.cancelStreamRender();
       console.error('AI request failed:', error);
 
       if (!assistantMessage.content) {
@@ -3834,6 +3814,40 @@ Instructions:
    */
   private scrollToBottom(): void {
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+  }
+
+  /**
+   * Coalesce stream deltas into one render per animation frame. Stickiness
+   * is measured BEFORE the DOM mutation so a tall render does not push the
+   * viewport out of follow range; scrolling bypasses CSS smooth-behavior,
+   * which would otherwise stack one animated scroll per frame.
+   */
+  private scheduleStreamRender(contentEl: HTMLElement, reasoningBody: HTMLElement | null, message: ChatMessage): void {
+    if (this.streamRenderRaf !== null) return;
+    this.streamRenderRaf = requestAnimationFrame(() => {
+      this.streamRenderRaf = null;
+      const stick = this.isChatNearBottom();
+      if (reasoningBody) reasoningBody.textContent = message.reasoning || '';
+      contentEl.innerHTML = renderMarkdown(message.content);
+      if (stick) this.scrollChatBottomInstant();
+    });
+  }
+
+  private cancelStreamRender(): void {
+    if (this.streamRenderRaf !== null) {
+      cancelAnimationFrame(this.streamRenderRaf);
+      this.streamRenderRaf = null;
+    }
+  }
+
+  /** True while the viewport is close enough to the bottom to auto-follow. */
+  private isChatNearBottom(): boolean {
+    const el = this.chatMessages;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  private scrollChatBottomInstant(): void {
+    this.chatMessages.scrollTo({ top: this.chatMessages.scrollHeight, behavior: 'instant' });
   }
 
   /**

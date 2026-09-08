@@ -120,36 +120,36 @@
 
 ## 项目结构
 
-```
+```text
 page-mind/
-├── manifest.json              # Chrome 扩展 Manifest V3
-├── package.json
-├── tsconfig.json              # TypeScript 配置
-├── tsconfig.build.json        # 构建用 TypeScript 配置
-├── copy-assets.js             # 构建脚本：复制非 TS 资源
-├── jest.config.js             # 测试配置
+├── agent.md
+├── README.md / README-EN.md
+├── manifest.json
+├── package.json / package-lock.json
+├── tsconfig*.json / jest.config.js
 ├── src/
-│   ├── sidepanel/
-│   │   ├── index.html         # 侧边栏 HTML
-│   │   ├── styles.css         # 样式
-│   │   └── sidepanel.ts       # 控制器（自包含）
 │   ├── background/
-│   │   └── service-worker.ts  # 后台服务工作线程
+│   ├── content/
+│   ├── sidepanel/
 │   ├── i18n/
-│   │   └── index.ts           # 国际化定义
 │   ├── utils/
-│   │   ├── api.ts             # API 通信
-│   │   ├── constants.ts       # 常量与默认值
-│   │   └── storage.ts         # 存储操作
 │   └── types/
-│       └── index.ts           # 类型定义
-├── assets/
-│   └── icons/                 # 扩展图标
-├── design/                    # 设计资源
-├── tests/                     # 单元测试
-└── scripts/
-    └── generate-icons.js      # 图标生成脚本
+├── assets/icons/
+├── scripts/
+│   ├── copy-assets.js
+│   └── generate-icons.js
+├── tests/
+│   ├── *.test.ts
+│   └── helpers/
+├── docs/
+│   ├── CHANGELOG.md
+│   ├── CODE_REVIEW.md
+│   ├── reports/
+│   └── design/
+└── dist/
 ```
+
+目录职责与新增文件规范见 [agent.md](agent.md)。`dist/` 为生成的扩展目录；测试报告放在 `docs/reports/`，设计源稿放在 `docs/design/`。
 
 ---
 

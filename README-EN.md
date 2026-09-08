@@ -120,36 +120,36 @@ Click the language indicator (中 / EN) in the header to switch between Chinese 
 
 ## Project Structure
 
-```
+```text
 page-mind/
-├── manifest.json              # Chrome Extension Manifest V3
-├── package.json
-├── tsconfig.json
-├── tsconfig.build.json
-├── copy-assets.js             # Build script: copy non-TS assets
-├── jest.config.js
+├── agent.md
+├── README.md / README-EN.md
+├── manifest.json
+├── package.json / package-lock.json
+├── tsconfig*.json / jest.config.js
 ├── src/
-│   ├── sidepanel/
-│   │   ├── index.html         # Side panel HTML
-│   │   ├── styles.css         # Styles
-│   │   └── sidepanel.ts       # Controller (self-contained)
 │   ├── background/
-│   │   └── service-worker.ts  # Background service worker
+│   ├── content/
+│   ├── sidepanel/
 │   ├── i18n/
-│   │   └── index.ts           # i18n definitions
 │   ├── utils/
-│   │   ├── api.ts             # API communication
-│   │   ├── constants.ts       # Constants & defaults
-│   │   └── storage.ts         # Storage operations
 │   └── types/
-│       └── index.ts           # Type definitions
-├── assets/
-│   └── icons/                 # Extension icons
-├── design/                    # Design assets
-├── tests/                     # Unit tests
-└── scripts/
-    └── generate-icons.js      # Icon generation script
+├── assets/icons/
+├── scripts/
+│   ├── copy-assets.js
+│   └── generate-icons.js
+├── tests/
+│   ├── *.test.ts
+│   └── helpers/
+├── docs/
+│   ├── CHANGELOG.md
+│   ├── CODE_REVIEW.md
+│   ├── reports/
+│   └── design/
+└── dist/
 ```
+
+See [agent.md](agent.md) for directory conventions. `dist/` contains the generated extension; test reports belong in `docs/reports/`, and design sources in `docs/design/`.
 
 ---
 

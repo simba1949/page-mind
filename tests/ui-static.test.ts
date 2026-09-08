@@ -175,9 +175,10 @@ describe('index.html: composer and settings markup hygiene', () => {
 
   test('keeps a paste shortcut in the composer when panel focus is lost', () => {
     expect(sidepanelTs).toContain("event.key.toLowerCase() !== 'v'");
-    expect(sidepanelTs).toContain("this.messageInput.setRangeText(text, start, end, 'end')");
+    expect(sidepanelTs).toContain('pastePlainText(event, this.messageInput)');
     expect(sidepanelTs).toContain("this.messageInput.addEventListener('pointerdown'");
-    expect(sidepanelTs).toContain('window.focus()');
+    expect(sidepanelTs).not.toContain('window.focus()');
+    expect(sidepanelTs).toContain('focusComposerInput(this.messageInput)');
   });
 
   test('the file picker accepts no native executables', () => {

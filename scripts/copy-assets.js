@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const projectRoot = path.resolve(__dirname, '..');
 
 /**
  * Cross-platform file copy script for building the browser extension
@@ -48,19 +49,20 @@ function copyAssets() {
   console.log('Copying assets and manifest to dist folder...');
 
   // Ensure dist directory exists
-  const distDir = './dist';
+  const distDir = path.join(projectRoot, 'dist');
   ensureDirectoryExists(distDir);
 
   // Copy manifest.json
-  copyFile('./manifest.json', './dist/manifest.json');
+  copyFile(path.join(projectRoot, 'manifest.json'), path.join(distDir, 'manifest.json'));
 
   // Copy assets directory
-  if (fs.existsSync('./assets')) {
-    copyDirectory('./assets', './dist/assets');
+  const assetsDir = path.join(projectRoot, 'assets');
+  if (fs.existsSync(assetsDir)) {
+    copyDirectory(assetsDir, path.join(distDir, 'assets'));
   }
 
   // Copy non-TypeScript files from src to dist
-  copyNonTSFiles('./src', './dist');
+  copyNonTSFiles(path.join(projectRoot, 'src'), distDir);
 
   console.log('Assets copied successfully!');
 }
