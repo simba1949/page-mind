@@ -1,4 +1,4 @@
-import { APIService } from '../src/utils/api';
+import { APIService } from '../src/sidepanel/sidepanel';
 import { APIConfig } from '../src/types';
 import { installFetchMock } from './helpers/chrome';
 

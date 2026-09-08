@@ -187,11 +187,10 @@ describe('index.html: composer and settings markup hygiene', () => {
     expect(sidepanelTs).toContain("this.showError(error instanceof Error ? error.message : I18nService.t('msg.apiError'))");
   });
 
-  test('keeps one APIService implementation with a compatibility export', () => {
-    const utilsApi = readFileSync(join(root, 'src', 'utils', 'api.ts'), 'utf8');
+  test('keeps one APIService implementation in the side panel module', () => {
     expect((sidepanelTs.match(/export class APIService/g) ?? []).length).toBe(1);
-    expect(utilsApi).toContain("export { APIService } from '../sidepanel/sidepanel.js';");
-    expect(utilsApi).not.toContain('class APIService');
+    expect(sidepanelTs).toContain('export class APIService');
+    expect(require('node:fs').existsSync(join(root, 'src', 'utils', 'api.ts'))).toBe(false);
   });
 
   test('the file picker accepts no native executables', () => {

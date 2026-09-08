@@ -48,7 +48,7 @@ npm run build
 
 未发现本轮新增的高危或中危安全缺陷。
 
-已处理的维护风险：此前 `src/sidepanel/sidepanel.ts` 与 `src/utils/api.ts` 各自包含 APIService 实现，行为和错误日志策略可能分叉。现在侧栏实现是唯一实现，`src/utils/api.ts` 仅保留兼容导出；超时计时器使用 `globalThis`，非流式 JSON 响应也由同一实现处理。后续新调用方应直接依赖唯一实现或兼容导出，不再复制 API 逻辑。
+已处理的维护风险：此前 `src/sidepanel/sidepanel.ts` 与 `src/utils/api.ts` 各自包含 APIService 实现，行为和错误日志策略可能分叉。现在仅保留侧栏中的唯一实现，已删除 `src/utils/api.ts`，测试直接依赖该实现；超时计时器使用 `globalThis`，非流式 JSON 响应也由同一实现处理。后续新调用方应直接依赖该实现，不再复制 API 逻辑。
 
 ## Chrome 实机验收清单
 
