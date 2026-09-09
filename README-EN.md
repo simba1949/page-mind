@@ -21,7 +21,7 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 
 - **Page-aware Q&A** — Automatically reads the current page and sends it to the AI as context. Ask anything about what you're viewing.
 - **Selection Q&A** — Select text on any page, right-click, and choose "Ask PageMind" to get answers about that specific text.
-- **Quick actions** — One-click shortcuts: Summarize, Explain, Translate the current page.
+- **Quick actions** — One-click shortcuts: Summarize, Explain, Translate the current page, plus configurable custom prompts.
 
 ### API formats
 
@@ -79,7 +79,7 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 
 ### First-time setup
 
-Version 0.1.2 uses a multi-profile storage contract; keys are session-only by default. Any service implementing `openai-chat`, `openai-responses`, or `anthropic-messages` is supported, with a user-provided endpoint.
+Version 0.1.3 adds configurable quick actions. Settings are reinitialized after upgrading, so the API configuration must be entered again. Any service implementing `openai-chat`, `openai-responses`, or `anthropic-messages` is supported, with a user-provided endpoint.
 
 1. Click the PageMind icon in the toolbar to open the side panel.
 2. Click the **Settings** (gear) icon.
@@ -104,13 +104,15 @@ Version 0.1.2 uses a multi-profile storage contract; keys are session-only by de
 
 ### Quick actions
 
-Click any of the quick-action buttons above the input box:
+Click any quick-action button above the input box. Open **Quick actions** in Settings to add, edit, delete, and reorder custom actions, or choose which built-in actions to keep. You can save up to 10 custom actions; custom names and prompts are stored and displayed as entered and are not translated when the UI language changes.
 
 | Button | Action |
 |--------|--------|
 | ▤ Summarize | "Summarize the main points of this page." |
 | ◎ Explain | "Explain the key concepts in simple terms." |
 | 文 Translate | "Translate this page into Chinese." |
+
+Each custom action has a button name and a prompt. When fewer than three custom actions exist, you can choose which built-in actions remain; once there are three or more custom actions, the quick-action area prioritizes the custom actions.
 
 ### Language toggle
 

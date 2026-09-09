@@ -13,8 +13,8 @@ describe('side panel credential storage', () => {
     chromeMock.storage.session.remove.mockResolvedValue(undefined);
   });
 
-  test('clears data from an unsupported storage schema instead of migrating it', async () => {
-    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: 0 });
+  test('clears V0.1.2 data instead of migrating it to V0.1.3', async () => {
+    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: 2 });
 
     await StorageService.prepareStorage();
 
@@ -24,7 +24,29 @@ describe('side panel credential storage', () => {
       'settings_schema_version'
     ]);
     expect(chromeMock.storage.session.remove).toHaveBeenCalledWith(['session_api_keys', 'session_api_key']);
-    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: 2 });
+    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: 3 });
+  });
+
+  test('persists sanitized quick actions alongside the API settings', async () => {
+    await StorageService.saveSettings({
+      profiles: [],
+      activeProfileId: null,
+      language: 'zh',
+      theme: 'auto',
+      quickActions: [
+        { kind: 'custom', id: 'review', label: '复核', prompt: '请复核当前页面' },
+        { kind: 'builtin', id: 'explain' }
+      ]
+    });
+
+    const savedSettings = chromeMock.storage.local.set.mock.calls
+      .map(([value]) => value?.app_settings)
+      .find(Boolean) as { quickActions: unknown[] };
+
+    expect(savedSettings.quickActions).toEqual([
+      { kind: 'custom', id: 'review', label: '复核', prompt: '请复核当前页面' },
+      { kind: 'builtin', id: 'explain' }
+    ]);
   });
 
   test('encrypts remembered API keys before persistent storage', async () => {
