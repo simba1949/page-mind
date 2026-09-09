@@ -13,27 +13,61 @@ describe('side panel credential storage', () => {
     chromeMock.storage.session.remove.mockResolvedValue(undefined);
   });
 
-  test('migrates the schema without deleting saved settings', async () => {
-    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: 0 });
+  test('clears settings and credentials when the settings protocol changes', async () => {
+    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: '1.0', settings_protocol_version: '0.9' });
 
     await StorageService.prepareStorage();
 
-    expect(chromeMock.storage.local.remove).toHaveBeenCalledWith(['chat_history', 'conversations', 'contextSelection']);
-    expect(chromeMock.storage.local.remove).not.toHaveBeenCalledWith('app_settings');
-    expect(chromeMock.storage.local.remove).not.toHaveBeenCalledWith('encryption_key');
-    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: 3 });
+    expect(chromeMock.storage.local.remove).toHaveBeenCalledWith(['app_settings', 'encryption_key', 'settings_protocol_version']);
+    expect(chromeMock.storage.session.remove).toHaveBeenCalledWith(['session_api_keys', 'session_api_key']);
+    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: '1.0', settings_protocol_version: '1.0' });
   });
 
-  test('moves legacy chat history to session storage during migration', async () => {
+  test('preserves settings and records the protocol when the marker is missing', async () => {
+    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: '1.0' });
+
+    await StorageService.prepareStorage();
+
+    expect(chromeMock.storage.local.remove).not.toHaveBeenCalled();
+    expect(chromeMock.storage.session.remove).not.toHaveBeenCalled();
+    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: '1.0', settings_protocol_version: '1.0' });
+  });
+
+  test('preserves settings when only the project schema version changes', async () => {
+    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: '0.9', settings_protocol_version: '1.0' });
+
+    await StorageService.prepareStorage();
+
+    expect(chromeMock.storage.local.remove).not.toHaveBeenCalledWith([
+      'app_settings', 'encryption_key', 'settings_protocol_version'
+    ]);
+    expect(chromeMock.storage.session.remove).not.toHaveBeenCalled();
+    expect(chromeMock.storage.local.set).toHaveBeenCalledWith({ settings_schema_version: '1.0', settings_protocol_version: '1.0' });
+  });
+
+  test('does nothing when both the schema and settings protocol are current', async () => {
+    chromeMock.storage.local.get.mockResolvedValue({ settings_schema_version: '1.0', settings_protocol_version: '1.0' });
+
+    await StorageService.prepareStorage();
+
+    expect(chromeMock.storage.local.remove).not.toHaveBeenCalled();
+    expect(chromeMock.storage.session.remove).not.toHaveBeenCalled();
+    expect(chromeMock.storage.local.set).not.toHaveBeenCalled();
+  });
+
+  test('moves legacy chat history to session storage without clearing settings', async () => {
     const legacy = [{ id: 'm1', role: 'user', content: 'hello', timestamp: 1 }];
     chromeMock.storage.local.get
-      .mockResolvedValueOnce({ settings_schema_version: 2 })
+      .mockResolvedValueOnce({ settings_schema_version: '0.9', settings_protocol_version: '1.0' })
       .mockResolvedValueOnce({ chat_history: legacy });
 
     await StorageService.prepareStorage();
 
     expect(chromeMock.storage.session.set).toHaveBeenCalledWith({ chat_history: legacy });
     expect(chromeMock.storage.local.remove).toHaveBeenCalledWith(['chat_history', 'conversations', 'contextSelection']);
+    expect(chromeMock.storage.local.remove).not.toHaveBeenCalledWith([
+      'app_settings', 'encryption_key', 'settings_protocol_version'
+    ]);
   });
 
   test('clears the retired conversation archive explicitly', async () => {

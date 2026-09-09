@@ -80,7 +80,7 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 
 ### First-time setup
 
-Version 0.1.3 adds configurable quick actions. Settings are reinitialized after upgrading, so the API configuration must be entered again. Any service implementing `openai-chat`, `openai-responses`, or `anthropic-messages` is supported, with a user-provided endpoint.
+Version 0.1.3 adds configurable quick actions. The project version is `0.1.3`, the settings storage protocol is `1.0`, and the storage schema is `1.0`: settings are cleared only when an existing settings protocol value differs; a missing marker preserves the settings and records the current protocol. A project version change alone does not clear API configuration. Any service implementing `openai-chat`, `openai-responses`, or `anthropic-messages` is supported, with a user-provided endpoint.
 
 1. Click the PageMind icon in the toolbar to open the side panel.
 2. Click the **Settings** (gear) icon.

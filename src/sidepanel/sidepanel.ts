@@ -6,7 +6,8 @@ import {
   ENCRYPTED_API_KEY_PREFIX,
   LIMITS,
   STORAGE_KEYS,
-  STORAGE_SCHEMA_VERSION
+  STORAGE_SCHEMA_VERSION,
+  SETTINGS_PROTOCOL_VERSION
 } from '../utils/constants.js';
 import type {
   APIConfig,
@@ -174,41 +175,6 @@ export function filesFromDataTransfer(data: DataTransfer | null): File[] {
     }
   }
   return files;
-}
-
-// Message limits
-const LIMITS = {
-  MAX_CONTEXT_LENGTH: 8000,
-  MAX_MESSAGE_LENGTH: 4000,
-  MAX_HISTORY_MESSAGES: 100,
-  MAX_ATTACHMENTS: 4,
-  MAX_API_PROFILES: 10,
-  MAX_CUSTOM_QUICK_ACTIONS: 10,
-  MAX_QUICK_ACTION_ITEMS: 13,
-  MAX_QUICK_ACTION_LABEL_LENGTH: 80,
-  MAX_QUICK_ACTION_PROMPT_LENGTH: 4000
-} as const;
-
-interface PageContext {
-  type: 'full_page' | 'selection';
-  url: string;
-  title: string;
-  content: string;
-}
-
-export type ApiFormat = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
-
-export interface ApiProfile {
-  id: string;
-  format: ApiFormat;
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-  customModels: string[];
-  maxTokens?: number;
-  temperature?: number;
-  rememberApiKey: boolean;
-  remark: string;
 }
 
 function responsesMessageContent(msg: ChatMessage, includeImages: boolean): unknown {
@@ -417,27 +383,6 @@ export function getEffectiveQuickActions(value: unknown): QuickActionItem[] {
   return result;
 }
 
-// Default application settings
-const DEFAULT_SETTINGS: AppSettings = {
-  profiles: [],
-  activeProfileId: null,
-  language: 'zh', // 默认中文
-  theme: 'auto',
-};
-
-// Storage keys
-const STORAGE_KEYS = {
-  SETTINGS: 'app_settings',
-  CHAT_HISTORY: 'chat_history',
-  CONVERSATIONS: 'conversations',
-  ENCRYPTION_KEY: 'encryption_key',
-  SESSION_API_KEYS: 'session_api_keys',
-  SESSION_API_KEY: 'session_api_key',
-  SCHEMA_VERSION: 'settings_schema_version'
-} as const;
-const STORAGE_SCHEMA_VERSION = 3;
-const ENCRYPTED_API_KEY_PREFIX = 'enc:v1:';
-
 /** Normalize untrusted settings read from extension storage. */
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const stored = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -449,7 +394,8 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
   const quickActions = sanitizeQuickActions(stored.quickActions);
   return { profiles, activeProfileId,
     language: stored.language === 'zh' ? 'zh' : 'en',
-    theme: stored.theme === 'dark' ? 'dark' : 'light' };
+    theme: stored.theme === 'dark' ? 'dark' : 'light',
+    ...(quickActions ? { quickActions } : {}) };
 }
 
 function sanitizeProfile(value: unknown, index: number): ApiProfile | null {
@@ -482,15 +428,29 @@ export class StorageService {
 
   /** Initialize the current settings storage schema. */
   static async prepareStorage(): Promise<void> {
-    const result = await chrome.storage.local.get(STORAGE_KEYS.SCHEMA_VERSION);
-    const storedVersion = Number(result[STORAGE_KEYS.SCHEMA_VERSION]) || 0;
-    if (storedVersion >= STORAGE_SCHEMA_VERSION) return;
+    const result = await chrome.storage.local.get([
+      STORAGE_KEYS.SCHEMA_VERSION,
+      STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION
+    ]);
+    const storedVersion = typeof result[STORAGE_KEYS.SCHEMA_VERSION] === 'string'
+      ? result[STORAGE_KEYS.SCHEMA_VERSION]
+      : '';
+    const storedProtocolVersion = typeof result[STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION] === 'string'
+      ? result[STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION]
+      : '';
+    const hasStoredProtocolVersion = Object.prototype.hasOwnProperty.call(
+      result,
+      STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION
+    );
+    const settingsProtocolChanged = hasStoredProtocolVersion &&
+      storedProtocolVersion !== SETTINGS_PROTOCOL_VERSION;
+    const settingsProtocolNeedsRecord = !hasStoredProtocolVersion;
+    const schemaNeedsUpdate = storedVersion !== STORAGE_SCHEMA_VERSION;
+    if (!settingsProtocolChanged && !settingsProtocolNeedsRecord && !schemaNeedsUpdate) return;
 
-    // Migrations must preserve settings and credentials. The previous
-    // implementation deleted them whenever the schema version changed,
-    // turning a normal extension update into silent data loss. Version 3
-    // retires the unused conversation archive while keeping live chat data.
-    if (storedVersion < 3) {
+    // Data-structure migrations are independent from the settings protocol.
+    // A project/schema version change must not erase user configuration.
+    if (schemaNeedsUpdate) {
       const legacy = await chrome.storage.local.get([
         STORAGE_KEYS.CHAT_HISTORY,
         STORAGE_KEYS.CONVERSATIONS
@@ -515,8 +475,27 @@ export class StorageService {
         STORAGE_KEYS.CONTEXT_SELECTION
       ]);
     }
+
+    // Only an existing, different settings protocol invalidates the persisted
+    // configuration. A missing marker is not proof of a protocol change: keep
+    // the sanitized legacy settings and record the current protocol instead.
+    if (settingsProtocolChanged) {
+      await Promise.all([
+        chrome.storage.local.remove([
+          STORAGE_KEYS.SETTINGS,
+          STORAGE_KEYS.ENCRYPTION_KEY,
+          STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION
+        ]),
+        chrome.storage.session.remove([
+          STORAGE_KEYS.SESSION_API_KEYS,
+          STORAGE_KEYS.SESSION_API_KEY
+        ])
+      ]);
+    }
+
     await chrome.storage.local.set({
-      [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION
+      [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION,
+      [STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION]: SETTINGS_PROTOCOL_VERSION
     });
   }
 
@@ -2149,6 +2128,8 @@ class SidePanelController {
   private quickActionPromptInput!: HTMLTextAreaElement;
   private editingQuickActionId: string | null = null;
   private quickActionItems: QuickActionItem[] = [];
+  private quickActionEditorReturnFocus: HTMLElement | null = null;
+  private quickActionEditorReturnKey: string | null = null;
   private editingProfileId: string | null = null;
 
   private getActiveProfile(settings: AppSettings): ApiProfile | null {
@@ -2690,6 +2671,16 @@ class SidePanelController {
     document.getElementById('cancel-quick-action')?.addEventListener('click', () => this.closeQuickActionEditor());
     this.saveQuickActionBtn.addEventListener('click', () => void this.saveQuickAction());
     this.addQuickActionBtn.addEventListener('click', () => this.openQuickActionEditor(null));
+    this.quickActionEditor.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      const target = event.target;
+      const saveFromName = target === this.quickActionNameInput && !event.shiftKey;
+      const saveFromPrompt = target === this.quickActionPromptInput &&
+        (event.ctrlKey || event.metaKey) && !event.shiftKey;
+      if (!saveFromName && !saveFromPrompt) return;
+      event.preventDefault();
+      void this.saveQuickAction();
+    });
     const formatSelect = document.getElementById('api-format') as HTMLSelectElement;
     formatSelect.addEventListener('change', () => {
       const format = formatSelect.value as ApiFormat;
@@ -2934,6 +2925,7 @@ class SidePanelController {
     for (const builtin of BUILTIN_QUICK_ACTIONS) {
       const label = document.createElement('label');
       label.className = 'quick-action-builtin-option';
+      label.setAttribute('role', 'listitem');
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.dataset.builtinId = builtin.id;
@@ -3003,14 +2995,17 @@ class SidePanelController {
       }
     });
     document.addEventListener('keydown', (event) => {
-      const activeModal = !this.profileEditor.classList.contains('hidden')
-        ? this.profileEditor
-        : !this.settingsModal.classList.contains('hidden')
-          ? this.settingsModal
-          : null;
+      const activeModal = !this.quickActionEditor.classList.contains('hidden')
+        ? this.quickActionEditor
+        : !this.profileEditor.classList.contains('hidden')
+          ? this.profileEditor
+          : !this.settingsModal.classList.contains('hidden')
+            ? this.settingsModal
+            : null;
       if (!activeModal) return;
       if (event.key === 'Escape') {
-        if (activeModal === this.profileEditor) this.closeProfileEditor();
+        if (activeModal === this.quickActionEditor) this.closeQuickActionEditor();
+        else if (activeModal === this.profileEditor) this.closeProfileEditor();
         else this.closeSettings();
         return;
       }
@@ -4043,6 +4038,11 @@ Instructions:
 
   private openQuickActionEditor(actionId: string | null): void {
     this.editingQuickActionId = actionId;
+    const activeElement = document.activeElement;
+    this.quickActionEditorReturnFocus = activeElement instanceof HTMLElement && activeElement !== document.body
+      ? activeElement
+      : this.addQuickActionBtn;
+    this.quickActionEditorReturnKey = actionId ? `custom:${actionId}` : null;
     const action = actionId
       ? this.quickActionItems.find(item => item.kind === 'custom' && item.id === actionId)
       : undefined;
@@ -4058,7 +4058,17 @@ Instructions:
   private closeQuickActionEditor(): void {
     this.quickActionEditor.classList.add('hidden');
     this.editingQuickActionId = null;
-    this.addQuickActionBtn.focus();
+    const replacement = this.quickActionEditorReturnKey
+      ? Array.from(this.quickActionList.querySelectorAll<HTMLButtonElement>(
+        '[data-quick-action-operation="edit"]'
+      )).find(button => button.dataset.quickActionKey === this.quickActionEditorReturnKey)
+      : null;
+    const focusTarget = this.quickActionEditorReturnFocus?.isConnected
+      ? this.quickActionEditorReturnFocus
+      : replacement || this.addQuickActionBtn;
+    this.quickActionEditorReturnFocus = null;
+    this.quickActionEditorReturnKey = null;
+    focusTarget.focus();
   }
 
   private async saveQuickAction(): Promise<void> {
@@ -4156,6 +4166,8 @@ Instructions:
     this.profileEditor.classList.add('hidden');
     this.settingsModal.classList.add('hidden');
     this.editingQuickActionId = null;
+    this.quickActionEditorReturnFocus = null;
+    this.quickActionEditorReturnKey = null;
     this.settingsBtn.focus();
   }
 

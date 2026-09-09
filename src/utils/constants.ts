@@ -21,10 +21,15 @@ export const STORAGE_KEYS = {
   ENCRYPTION_KEY: 'encryption_key',
   SESSION_API_KEYS: 'session_api_keys',
   SESSION_API_KEY: 'session_api_key',
-  SCHEMA_VERSION: 'settings_schema_version'
+  SCHEMA_VERSION: 'settings_schema_version',
+  SETTINGS_PROTOCOL_VERSION: 'settings_protocol_version'
 } as const;
 
-export const STORAGE_SCHEMA_VERSION = 3;
+// These are independent version identifiers even where their current values
+// happen to be equal. Project releases alone must not invalidate settings.
+export const PROJECT_VERSION = '0.1.3';
+export const SETTINGS_PROTOCOL_VERSION = '1.0';
+export const STORAGE_SCHEMA_VERSION = '1.0';
 export const ENCRYPTED_API_KEY_PREFIX = 'enc:v1:';
 
 export const LIMITS = {
@@ -33,5 +38,9 @@ export const LIMITS = {
   MAX_HISTORY_MESSAGES: 100,
   MAX_HISTORY_BYTES: 8_000_000,
   MAX_ATTACHMENTS: 4,
-  MAX_API_PROFILES: 10
+  MAX_API_PROFILES: 10,
+  MAX_CUSTOM_QUICK_ACTIONS: 10,
+  MAX_QUICK_ACTION_ITEMS: 13,
+  MAX_QUICK_ACTION_LABEL_LENGTH: 80,
+  MAX_QUICK_ACTION_PROMPT_LENGTH: 4000
 } as const;

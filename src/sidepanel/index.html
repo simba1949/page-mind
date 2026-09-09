@@ -61,7 +61,7 @@
       <!-- Input Area -->
       <div class="input-container">
         <!-- Quick Actions -->
-        <div id="quick-actions" class="quick-actions" aria-label="快捷操作"></div>
+        <div id="quick-actions" class="quick-actions" role="toolbar" aria-label="快捷操作"></div>
 
         <!-- Quote Bar (pending quoted AI reply for the next question) -->
         <div id="quote-bar" class="preview-bar quote hidden" aria-live="polite">
@@ -183,7 +183,7 @@
             </div>
             <div class="quick-action-setting-section">
               <label id="label-builtin-quick-actions">内置操作</label>
-              <div id="builtin-quick-action-list" class="quick-action-builtin-list"></div>
+              <div id="builtin-quick-action-list" class="quick-action-builtin-list" role="list" aria-labelledby="label-builtin-quick-actions"></div>
             </div>
             <div class="quick-action-setting-section">
               <div class="quick-action-setting-section-header">
