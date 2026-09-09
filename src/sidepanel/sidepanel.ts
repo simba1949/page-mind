@@ -1,39 +1,28 @@
 // Browser ES modules require an explicit extension in MV3 pages.
 import { CryptoService } from '../utils/crypto.js';
-import type { APIConfig } from '../types/index.js';
+import {
+  API_PRESETS,
+  DEFAULT_SETTINGS,
+  ENCRYPTED_API_KEY_PREFIX,
+  LIMITS,
+  STORAGE_KEYS,
+  STORAGE_SCHEMA_VERSION
+} from '../utils/constants.js';
+import type {
+  APIConfig,
+  ApiFormat,
+  ApiProfile,
+  AppSettings,
+  ChatMessage,
+  MessageAttachment,
+  PageContext
+} from '../types/index.js';
 import { focusComposerInput, isNativePasteTarget, pastePlainText, shouldFocusComposer } from './composer.js';
 
 /**
  * Side panel controller for the AI assistant interface.
  * Runtime services stay local; credential encryption is shared with tests.
  */
-
-// Type definitions (simplified for self-contained usage)
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: number;
-  context?: PageContext;
-  // A previous AI reply the user quoted for this message; sent alongside
-  // the question, kept out of the composer.
-  quote?: string;
-  // Files attached to this message: images ride along as vision content,
-  // text files are inlined into the prompt.
-  attachments?: MessageAttachment[];
-  reasoning?: string;
-}
-
-/** A user-attached file. Images keep a (downscaled) data URL; text files
- *  keep their extracted content. */
-interface MessageAttachment {
-  id: string;
-  kind: 'image' | 'text';
-  name: string;
-  mime: string;
-  dataUrl?: string;
-  text?: string;
-}
 
 const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const SAFE_IMAGE_MIME_RE = /^image\/(png|jpe?g|gif|webp|bmp)$/i;
@@ -185,37 +174,6 @@ export function filesFromDataTransfer(data: DataTransfer | null): File[] {
   return files;
 }
 
-// Message limits
-const LIMITS = {
-  MAX_CONTEXT_LENGTH: 8000,
-  MAX_MESSAGE_LENGTH: 4000,
-  MAX_HISTORY_MESSAGES: 100,
-  MAX_ATTACHMENTS: 4,
-  MAX_API_PROFILES: 10
-} as const;
-
-interface PageContext {
-  type: 'full_page' | 'selection';
-  url: string;
-  title: string;
-  content: string;
-}
-
-export type ApiFormat = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
-
-export interface ApiProfile {
-  id: string;
-  format: ApiFormat;
-  apiKey: string;
-  model: string;
-  baseUrl: string;
-  customModels: string[];
-  maxTokens?: number;
-  temperature?: number;
-  rememberApiKey: boolean;
-  remark: string;
-}
-
 function responsesMessageContent(msg: ChatMessage, includeImages: boolean): unknown {
   const images = includeImages ? (msg.attachments || []).filter(a => a.kind === 'image' && a.dataUrl) : [];
   if (images.length === 0) return msg.content;
@@ -223,13 +181,6 @@ function responsesMessageContent(msg: ChatMessage, includeImages: boolean): unkn
     { type: 'input_text', text: msg.content },
     ...images.map(a => ({ type: 'input_image', image_url: a.dataUrl }))
   ];
-}
-
-export interface AppSettings {
-  profiles: ApiProfile[];
-  activeProfileId: string | null;
-  language: 'en' | 'zh';
-  theme: 'light' | 'dark' | 'auto';
 }
 
 interface ProfileFormValues {
@@ -284,12 +235,33 @@ export function sanitizeAttachments(value: unknown): MessageAttachment[] | undef
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
-// Convenience presets only. Any endpoint implementing a supported format is valid.
-const API_PRESETS: Record<ApiFormat, { name: string; baseUrl: string; models: string[] }> = {
-  'openai-chat': { name: 'OpenAI Chat', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4.1-mini'] },
-  'openai-responses': { name: 'OpenAI Responses', baseUrl: 'https://api.openai.com/v1', models: ['gpt-5', 'gpt-4.1'] },
-  'anthropic-messages': { name: 'Anthropic Messages', baseUrl: 'https://api.anthropic.com/v1', models: ['claude-3-5-sonnet-latest', 'claude-3-haiku-20240307'] }
-};
+function sanitizeStoredMessage(value: unknown): ChatMessage | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<ChatMessage>;
+  if ((raw.role !== 'user' && raw.role !== 'assistant' && raw.role !== 'system') ||
+      typeof raw.id !== 'string' || typeof raw.content !== 'string' ||
+      typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp)) {
+    return null;
+  }
+  return {
+    id: raw.id.slice(0, 200),
+    role: raw.role,
+    content: raw.content.slice(0, 20_000),
+    timestamp: raw.timestamp,
+    context: sanitizePageContext(raw.context) || undefined,
+    quote: typeof raw.quote === 'string' ? raw.quote.slice(0, 20_000) : undefined,
+    reasoning: typeof raw.reasoning === 'string' ? raw.reasoning.slice(0, 20_000) : undefined,
+    attachments: sanitizeAttachments(raw.attachments)
+  };
+}
+
+function capHistoryToStorageBudget(history: ChatMessage[]): ChatMessage[] {
+  const capped = history.slice(-LIMITS.MAX_HISTORY_MESSAGES);
+  while (capped.length > 1 && JSON.stringify(capped).length > LIMITS.MAX_HISTORY_BYTES) {
+    capped.shift();
+  }
+  return capped;
+}
 
 function createProfile(format: ApiFormat = 'openai-chat'): ApiProfile {
   const preset = API_PRESETS[format];
@@ -303,27 +275,6 @@ function newProfileId(): string {
   const cryptoApi = (globalThis as typeof globalThis & { crypto?: Crypto }).crypto;
   return typeof cryptoApi?.randomUUID === 'function' ? cryptoApi.randomUUID() : `profile-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
-
-// Default application settings
-const DEFAULT_SETTINGS: AppSettings = {
-  profiles: [],
-  activeProfileId: null,
-  language: 'zh', // 默认中文
-  theme: 'auto',
-};
-
-// Storage keys
-const STORAGE_KEYS = {
-  SETTINGS: 'app_settings',
-  CHAT_HISTORY: 'chat_history',
-  CONVERSATIONS: 'conversations',
-  ENCRYPTION_KEY: 'encryption_key',
-  SESSION_API_KEYS: 'session_api_keys',
-  SESSION_API_KEY: 'session_api_key',
-  SCHEMA_VERSION: 'settings_schema_version'
-} as const;
-const STORAGE_SCHEMA_VERSION = 2;
-const ENCRYPTED_API_KEY_PREFIX = 'enc:v1:';
 
 /** Normalize untrusted settings read from extension storage. */
 export function sanitizeAppSettings(value: unknown): AppSettings {
@@ -369,16 +320,38 @@ export class StorageService {
   /** Initialize the current settings storage schema. */
   static async prepareStorage(): Promise<void> {
     const result = await chrome.storage.local.get(STORAGE_KEYS.SCHEMA_VERSION);
-    if (result[STORAGE_KEYS.SCHEMA_VERSION] === STORAGE_SCHEMA_VERSION) return;
+    const storedVersion = Number(result[STORAGE_KEYS.SCHEMA_VERSION]) || 0;
+    if (storedVersion >= STORAGE_SCHEMA_VERSION) return;
 
-    await Promise.all([
-      chrome.storage.local.remove([
-        STORAGE_KEYS.SETTINGS,
-        STORAGE_KEYS.ENCRYPTION_KEY,
-        STORAGE_KEYS.SCHEMA_VERSION
-      ]),
-      chrome.storage.session.remove([STORAGE_KEYS.SESSION_API_KEYS, STORAGE_KEYS.SESSION_API_KEY])
-    ]);
+    // Migrations must preserve settings and credentials. The previous
+    // implementation deleted them whenever the schema version changed,
+    // turning a normal extension update into silent data loss. Version 3
+    // retires the unused conversation archive while keeping live chat data.
+    if (storedVersion < 3) {
+      const legacy = await chrome.storage.local.get([
+        STORAGE_KEYS.CHAT_HISTORY,
+        STORAGE_KEYS.CONVERSATIONS
+      ]);
+      const legacyMessages = Array.isArray(legacy[STORAGE_KEYS.CHAT_HISTORY])
+        ? legacy[STORAGE_KEYS.CHAT_HISTORY] as unknown[]
+        : null;
+      const legacyChatHistory = legacyMessages
+        ? capHistoryToStorageBudget(
+          legacyMessages.map(sanitizeStoredMessage)
+            .filter((message): message is ChatMessage => message !== null)
+        )
+        : null;
+      if (legacyChatHistory) {
+        await chrome.storage.session.set({
+          [STORAGE_KEYS.CHAT_HISTORY]: legacyChatHistory
+        });
+      }
+      await chrome.storage.local.remove([
+        STORAGE_KEYS.CHAT_HISTORY,
+        STORAGE_KEYS.CONVERSATIONS,
+        STORAGE_KEYS.CONTEXT_SELECTION
+      ]);
+    }
     await chrome.storage.local.set({
       [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION
     });
@@ -397,6 +370,10 @@ export class StorageService {
           }
         }
 
+        // This protects against accidental plaintext exposure inside the
+        // browser profile. It is not a separate OS keychain: the key remains
+        // in the same extension storage area so remembered keys can be
+        // restored automatically.
         const key = await CryptoService.generateKey();
         await chrome.storage.local.set({
           [STORAGE_KEYS.ENCRYPTION_KEY]: await CryptoService.exportKey(key)
@@ -476,23 +453,14 @@ export class StorageService {
 
   static async getChatHistory(): Promise<ChatMessage[]> {
     try {
-      const result = await chrome.storage.local.get(STORAGE_KEYS.CHAT_HISTORY);
+      const result = await chrome.storage.session.get(STORAGE_KEYS.CHAT_HISTORY);
       const history = result[STORAGE_KEYS.CHAT_HISTORY];
       if (!Array.isArray(history)) return [];
-      return history
-        .filter((message: any) => message && typeof message.id === 'string' &&
-          ['user', 'assistant', 'system'].includes(message.role) &&
-          typeof message.content === 'string' && typeof message.timestamp === 'number')
-        .slice(-LIMITS.MAX_HISTORY_MESSAGES)
-        .map((message: ChatMessage) => ({
-          ...message,
-          content: message.content.slice(0, 20_000),
-          context: sanitizePageContext(message.context) || undefined,
-          reasoning: typeof message.reasoning === 'string'
-            ? message.reasoning.slice(0, 20_000)
-            : undefined,
-          attachments: sanitizeAttachments((message as { attachments?: unknown }).attachments)
-        }));
+      const cleaned = history
+        .map(sanitizeStoredMessage)
+        .filter((message): message is ChatMessage => message !== null)
+        .slice(-LIMITS.MAX_HISTORY_MESSAGES);
+      return capHistoryToStorageBudget(cleaned);
     } catch (error) {
       console.error('Failed to load chat history:', error);
       return [];
@@ -501,15 +469,13 @@ export class StorageService {
 
   static async saveChatMessage(message: ChatMessage): Promise<void> {
     try {
+      const safeMessage = sanitizeStoredMessage(message);
+      if (!safeMessage) return;
       const history = await this.getChatHistory();
-      history.push(message);
+      history.push(safeMessage);
 
-      if (history.length > LIMITS.MAX_HISTORY_MESSAGES) {
-        history.splice(0, history.length - LIMITS.MAX_HISTORY_MESSAGES);
-      }
-
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.CHAT_HISTORY]: history
+      await chrome.storage.session.set({
+        [STORAGE_KEYS.CHAT_HISTORY]: capHistoryToStorageBudget(history)
       });
     } catch (error) {
       console.error('Failed to save chat message:', error);
@@ -519,11 +485,29 @@ export class StorageService {
 
   static async clearChatHistory(): Promise<void> {
     try {
-      await chrome.storage.local.remove(STORAGE_KEYS.CHAT_HISTORY);
+      await chrome.storage.session.remove(STORAGE_KEYS.CHAT_HISTORY);
     } catch (error) {
       console.error('Failed to clear chat history:', error);
       throw error;
     }
+  }
+
+  static async clearConversationHistory(): Promise<void> {
+    try {
+      await chrome.storage.local.remove(STORAGE_KEYS.CONVERSATIONS);
+    } catch (error) {
+      console.error('Failed to clear conversation history:', error);
+      throw error;
+    }
+  }
+
+  static async saveChatHistory(messages: ChatMessage[]): Promise<void> {
+    const safeHistory = messages
+      .map(sanitizeStoredMessage)
+      .filter((message): message is ChatMessage => message !== null);
+    await chrome.storage.session.set({
+      [STORAGE_KEYS.CHAT_HISTORY]: capHistoryToStorageBudget(safeHistory)
+    });
   }
 }
 
@@ -657,34 +641,60 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/** Reverse escapeHtml for inert, URI-encoded clipboard metadata only. */
+function mdUnescapeHtml(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&');
+}
+
 /** Wrap one fenced block's html with its language label and copy button. */
 function mdFenceToHtml(lang: string, code: string): string {
   const label = lang.trim()
     ? `<span class="md-lang">${lang.trim()}</span>`
     : '';
-  const normalizedCode = mdNormalizeFenceCode(code);
-  return `<div class="md-pre-wrap">` +
+  // `code` is already HTML-escaped by renderMarkdown. Keep it in metadata so
+  // copying can preserve the fenced block's original whitespace while the
+  // visible code uses a compact, normalized form.
+  const displayCode = mdNormalizeFenceCode(code);
+  const rawCopyCode = mdUnescapeHtml(code);
+  const copyMetadata = rawCopyCode.length <= 200_000
+    ? ` data-copy-code="${encodeURIComponent(rawCopyCode)}"`
+    : '';
+  return `<div class="md-pre-wrap"${copyMetadata}>` +
     `<button type="button" class="md-code-copy" title="${I18nService.t('btn.copyCode')}">${COPY_ICON_SVG}</button>` +
-    `<pre class="md-pre">${label}<code>${normalizedCode}</code></pre></div>`;
+    `<pre class="md-pre">${label}<code>${displayCode}</code></pre></div>`;
 }
 
 /** Remove formatter noise around fenced code without changing its structure. */
 function mdNormalizeFenceCode(code: string): string {
   const lines = code.replace(/\r\n?/g, '\n').split('\n');
 
-  while (lines.length > 0 && !lines[0].trim()) lines.shift();
-  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
-  if (lines.length === 0) return '';
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start].trim()) start++;
+  while (end > start && !lines[end - 1].trim()) end--;
+  if (start === end) return '';
 
-  const indents = lines
-    .filter(line => line.trim())
-    .map(line => line.match(/^[ \t]*/)?.[0].length ?? 0);
-  const commonIndent = Math.min(...indents);
+  let commonIndent = Infinity;
+  for (let i = start; i < end; i++) {
+    if (!lines[i].trim()) continue;
+    commonIndent = Math.min(commonIndent, lines[i].match(/^[ \t]*/)?.[0].length ?? 0);
+  }
 
-  return lines.map(line => {
-    if (!line.trim()) return '';
-    return line.slice(commonIndent).replace(/[ \t]+$/, '');
-  }).join('\n');
+  const normalized: string[] = [];
+  for (let i = start; i < end; i++) {
+    const line = lines[i];
+    if (!line.trim()) {
+      normalized.push('');
+    } else {
+      normalized.push(line.slice(commonIndent).replace(/[ \t]+$/, ''));
+    }
+  }
+  return normalized.join('\n');
 }
 
 /**
@@ -1010,6 +1020,27 @@ async function ensureEndpointPermission(baseUrl: string, requestPermission: bool
   return chrome.permissions.request({ origins: [origin] });
 }
 
+export function pageOriginPattern(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(url.hostname)) return null;
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return `${url.origin}/*`;
+  } catch {
+    return null;
+  }
+}
+
+async function currentPageOriginPattern(): Promise<string | null> {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB' });
+    return pageOriginPattern(response?.data?.url);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ensure the extension can read the content of the page the user is
  * currently browsing. Reading page content relies on the `scripting` API,
@@ -1017,11 +1048,13 @@ async function ensureEndpointPermission(baseUrl: string, requestPermission: bool
  * that was active when the extension was last invoked) or a standing host
  * permission. Because the side panel stays open while the user switches
  * tabs, `activeTab` alone silently stops working the moment the user moves
- * to a tab that wasn't the one that triggered the grant - this requests the
- * broader (optional) host permission so page reading keeps working.
+ * to a tab that wasn't the one that triggered the grant - this requests only
+ * the current page origin when the user explicitly approves it.
  */
 async function ensurePageAccessPermission(requestPermission: boolean): Promise<boolean> {
-  const origins = ['https://*/*'];
+  const origin = await currentPageOriginPattern();
+  if (!origin) return false;
+  const origins = [origin];
   const granted = await chrome.permissions.contains({ origins });
   if (granted || !requestPermission) return granted;
   return chrome.permissions.request({ origins });
@@ -1030,6 +1063,13 @@ async function ensurePageAccessPermission(requestPermission: boolean): Promise<b
 interface StreamHandlers {
   onReasoning?: (delta: string) => void;
   onContent?: (delta: string) => void;
+}
+
+const MAX_RENDERED_OUTPUT_CHARS = 200_000;
+
+function appendCappedText(current: string, delta: string): string {
+  const remaining = MAX_RENDERED_OUTPUT_CHARS - current.length;
+  return remaining > 0 ? delta.slice(0, remaining) : '';
 }
 
 /**
@@ -1102,6 +1142,8 @@ export class APIService {
   private config: APIConfig;
   private static readonly REQUEST_TIMEOUT_MS = 120_000;
   private static readonly MAX_JSON_RESPONSE_BYTES = 4_000_000;
+  private static readonly MAX_ERROR_RESPONSE_BYTES = 32_000;
+  private static readonly MAX_STREAM_RESPONSE_BYTES = 8_000_000;
 
   constructor(config: APIConfig) {
     this.config = {
@@ -1126,6 +1168,44 @@ export class APIService {
     }
   }
 
+  /** Read an API response without allowing an untrusted endpoint to exhaust memory. */
+  private async readCappedText(response: Response, maxBytes: number): Promise<string> {
+    const contentLength = Number(response.headers?.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new Error(I18nService.t('msg.responseTooLarge'));
+    }
+
+    const body = response.body;
+    if (!body) {
+      const text = typeof response.text === 'function'
+        ? await response.text()
+        : JSON.stringify(await response.json());
+      if (text.length > maxBytes) throw new Error(I18nService.t('msg.responseTooLarge'));
+      return text;
+    }
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > maxBytes) {
+          await reader.cancel();
+          throw new Error(I18nService.t('msg.responseTooLarge'));
+        }
+        chunks.push(decoder.decode(value, { stream: true }));
+      }
+      chunks.push(decoder.decode());
+      return chunks.join('');
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   /**
    * Parse the response body as JSON, surfacing an actionable error when the
    * endpoint answered with an HTML page instead — the typical symptom of a
@@ -1137,12 +1217,7 @@ export class APIService {
     if (Number.isFinite(contentLength) && contentLength > APIService.MAX_JSON_RESPONSE_BYTES) {
       throw new Error(I18nService.t('msg.responseTooLarge'));
     }
-    const body = typeof response.text === 'function'
-      ? await response.text()
-      : JSON.stringify(await response.json());
-    if (body.length > APIService.MAX_JSON_RESPONSE_BYTES) {
-      throw new Error(I18nService.t('msg.responseTooLarge'));
-    }
+    const body = await this.readCappedText(response, APIService.MAX_JSON_RESPONSE_BYTES);
     if (contentType.includes('text/html') || body.trimStart().startsWith('<')) {
       throw new Error(I18nService.t('msg.htmlResponse'));
     }
@@ -1195,7 +1270,9 @@ export class APIService {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorText = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
+      let errorData: any = {};
+      try { errorData = JSON.parse(errorText); } catch { /* use status below */ }
       throw new Error(errorData.error?.message || `HTTP ${response.status}`);
     }
 
@@ -1296,9 +1373,7 @@ export class APIService {
     });
 
     if (!response.ok) {
-      const errorText = typeof response.text === 'function'
-        ? await response.text()
-        : JSON.stringify(await response.json().catch(() => ({})));
+      const errorText = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
       let errorData;
       try {
         errorData = JSON.parse(errorText);
@@ -1324,8 +1399,8 @@ export class APIService {
       const fullReasoning = [
         responseMessage.reasoning_content || responseMessage.reasoning || '',
         separated.reasoning
-      ].filter(Boolean).join('\n');
-      const fullContent = separated.content;
+      ].filter(Boolean).join('\n').slice(0, MAX_RENDERED_OUTPUT_CHARS);
+      const fullContent = separated.content.slice(0, MAX_RENDERED_OUTPUT_CHARS);
       if (fullReasoning) handlers?.onReasoning?.(fullReasoning);
       if (fullContent) handlers?.onContent?.(fullContent);
       return {
@@ -1347,11 +1422,13 @@ export class APIService {
     // the answer and thinking parts separately (see stripThinkTags).
     const separateThink = createThinkSeparator((kind, text) => {
       if (kind === 'reasoning') {
-        reasoning += text;
-        handlers?.onReasoning?.(text);
+        const accepted = appendCappedText(reasoning, text);
+        reasoning += accepted;
+        if (accepted) handlers?.onReasoning?.(accepted);
       } else {
-        content += text;
-        handlers?.onContent?.(text);
+        const accepted = appendCappedText(content, text);
+        content += accepted;
+        if (accepted) handlers?.onContent?.(accepted);
       }
     });
 
@@ -1375,13 +1452,14 @@ export class APIService {
       const delta = parsed.choices?.[0]?.delta || {};
       const reasoningDelta = delta.reasoning_content || delta.reasoning;
       if (typeof reasoningDelta === 'string' && reasoningDelta) {
-        reasoning += reasoningDelta;
-        handlers?.onReasoning?.(reasoningDelta);
+        const accepted = appendCappedText(reasoning, reasoningDelta);
+        reasoning += accepted;
+        if (accepted) handlers?.onReasoning?.(accepted);
       }
       if (typeof delta.content === 'string' && delta.content) {
         // Thinking may arrive inline as <think>…</think> inside content;
         // split it out so it lands in the reasoning block, not the answer
-        separateThink.push(delta.content);
+        separateThink.push(appendCappedText(content, delta.content));
       }
     });
     separateThink.flush();
@@ -1413,13 +1491,15 @@ export class APIService {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` }, body: JSON.stringify(body)
     });
     if (!response.ok) {
-      const detail = await response.text();
+      const detail = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
       throw new Error(openAICompatibleErrorMessage(response.status, detail));
     }
     const contentType = response.headers?.get('content-type') || '';
     if (!response.body || !contentType.includes('text/event-stream')) {
       const data = await this.parseJsonBody(response);
-      const content = typeof data.output_text === 'string' ? data.output_text : '';
+      const content = typeof data.output_text === 'string'
+        ? data.output_text.slice(0, MAX_RENDERED_OUTPUT_CHARS)
+        : '';
       if (content) handlers?.onContent?.(content);
       return { content, usage: { promptTokens: data.usage?.input_tokens || 0, completionTokens: data.usage?.output_tokens || 0, totalTokens: data.usage?.total_tokens || 0 } };
     }
@@ -1430,7 +1510,9 @@ export class APIService {
       let event: any;
       try { event = JSON.parse(payload); } catch { return; }
       if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-        content += event.delta; handlers?.onContent?.(event.delta);
+        const accepted = appendCappedText(content, event.delta);
+        content += accepted;
+        if (accepted) handlers?.onContent?.(accepted);
       }
       if (event.type === 'response.completed') usage = event.response?.usage || usage;
       if (event.type === 'error' || event.type === 'response.failed') throw new Error(event.error?.message || event.response?.error?.message || 'Responses API streaming error');
@@ -1469,7 +1551,9 @@ export class APIService {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorText = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
+      let errorData: any = {};
+      try { errorData = JSON.parse(errorText); } catch { /* use status below */ }
       throw new Error(errorData.error?.message || `HTTP ${response.status}`);
     }
 
@@ -1480,8 +1564,8 @@ export class APIService {
     if (!response.body || !contentType.includes('text/event-stream')) {
       const data = await this.parseJsonBody(response);
       const blocks: any[] = Array.isArray(data.content) ? data.content : [];
-      const fullContent = blocks.filter(block => block?.type === 'text').map(block => block.text).join('\n\n');
-      const fullReasoning = blocks.filter(block => block?.type === 'thinking').map(block => block.thinking).join('\n\n');
+      const fullContent = blocks.filter(block => block?.type === 'text').map(block => block.text).join('\n\n').slice(0, MAX_RENDERED_OUTPUT_CHARS);
+      const fullReasoning = blocks.filter(block => block?.type === 'thinking').map(block => block.thinking).join('\n\n').slice(0, MAX_RENDERED_OUTPUT_CHARS);
       if (fullReasoning) handlers?.onReasoning?.(fullReasoning);
       if (fullContent) handlers?.onContent?.(fullContent);
       return {
@@ -1522,11 +1606,13 @@ export class APIService {
           break;
         case 'content_block_delta':
           if (parsed.delta?.type === 'thinking_delta' && typeof parsed.delta.thinking === 'string') {
-            reasoning += parsed.delta.thinking;
-            handlers?.onReasoning?.(parsed.delta.thinking);
+            const accepted = appendCappedText(reasoning, parsed.delta.thinking);
+            reasoning += accepted;
+            if (accepted) handlers?.onReasoning?.(accepted);
           } else if (parsed.delta?.type === 'text_delta' && typeof parsed.delta.text === 'string') {
-            content += parsed.delta.text;
-            handlers?.onContent?.(parsed.delta.text);
+            const accepted = appendCappedText(content, parsed.delta.text);
+            content += accepted;
+            if (accepted) handlers?.onContent?.(accepted);
           }
           break;
         case 'message_delta':
@@ -1558,13 +1644,24 @@ export class APIService {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let totalBytes = 0;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
+        totalBytes += value.byteLength;
+        if (totalBytes > APIService.MAX_STREAM_RESPONSE_BYTES) {
+          await reader.cancel();
+          throw new Error(I18nService.t('msg.responseTooLarge'));
+        }
+
         buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > APIService.MAX_STREAM_RESPONSE_BYTES) {
+          await reader.cancel();
+          throw new Error(I18nService.t('msg.responseTooLarge'));
+        }
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
 
@@ -1670,10 +1767,10 @@ const translations = {
     'status.localSession': 'Local session',
     'composer.help': 'Enter to send · Shift + Enter for a new line',
     'composer.limit': 'Up to 4,000 characters',
-    'settings.sessionKey': 'Your key is saved locally in this browser and is only accessible by this extension',
-    'label.rememberKey': 'Remember key on this device',
+    'settings.sessionKey': 'The key is protected inside this browser profile and restored automatically by this extension',
+    'label.rememberKey': 'Save key on this device',
     'label.warningTitle': 'Security Notice',
-    'label.warningText': 'Your key will be stored in this Chrome user profile and is only accessible by this extension. Uncheck after closing the browser to clear automatically.',
+    'label.warningText': 'The key will be protected inside this Chrome user profile and restored automatically by this extension. Uncheck to keep it only for this browser session.',
     'label.summarize': 'Summarize',
     'label.explain': 'Explain',
     'label.translate': 'Translate'
@@ -1754,10 +1851,10 @@ const translations = {
     'status.localSession': '本地会话',
     'composer.help': 'Enter 发送 · Shift + Enter 换行',
     'composer.limit': '最多 4000 字',
-    'settings.sessionKey': '密钥保存在本地浏览器中，仅本插件可访问',
-    'label.rememberKey': '在此设备记住密钥',
+    'settings.sessionKey': '密钥受此浏览器配置保护，并由本插件自动恢复',
+    'label.rememberKey': '在此设备保存密钥',
     'label.warningTitle': '安全提示',
-    'label.warningText': '密钥将保存在此 Chrome 用户配置中，仅本插件可访问。取消勾选后关闭浏览器会自动清理。',
+    'label.warningText': '密钥将受此 Chrome 用户配置保护，并由本插件自动恢复。取消勾选后仅在本次浏览器会话中保存。',
     'label.summarize': '总结',
     'label.explain': '解释',
     'label.translate': '翻译'
@@ -1815,6 +1912,8 @@ class SidePanelController {
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private streamRenderRaf: number | null = null;
+  private settingsTheme: AppSettings['theme'] = 'auto';
+  private colorSchemeQuery: MediaQueryList | null = null;
   private profileEditor!: HTMLElement;
   private closeProfileEditorBtn!: HTMLButtonElement;
   private profileEditorTitle!: HTMLElement;
@@ -2024,7 +2123,7 @@ class SidePanelController {
       } else {
         // Nothing readable: either the tab isn't a web page, or site access
         // isn't granted. Only the latter is fixable — offer it once.
-        const hasAccess = await chrome.permissions.contains({ origins: ['https://*/*'] });
+        const hasAccess = await ensurePageAccessPermission(false);
         if (hasAccess) {
           this.previewBar.classList.add('hidden');
         } else {
@@ -2311,12 +2410,22 @@ class SidePanelController {
       }
       const codeBtn = target.closest<HTMLButtonElement>('.md-code-copy');
       if (codeBtn) {
-        const code = codeBtn.parentElement?.querySelector('pre code');
-        if (code) {
+        const wrapper = codeBtn.parentElement;
+        const code = wrapper?.querySelector('pre code');
+        if (wrapper && code) {
           event.stopPropagation();
-          // textContent reverses the HTML escaping done at render time,
-          // so the clipboard receives the original source text
-          void copyTextToClipboard(code.textContent || '');
+          // Prefer the URI-encoded source preserved on the wrapper. Fall back
+          // to the visible code if metadata is missing or malformed.
+          let copyCode = code.textContent ?? '';
+          const encodedCopyCode = wrapper.dataset.copyCode;
+          if (encodedCopyCode !== undefined) {
+            try {
+              copyCode = decodeURIComponent(encodedCopyCode);
+            } catch {
+              // Keep the visible code as a safe fallback.
+            }
+          }
+          void copyTextToClipboard(copyCode);
           this.flashCopyButton(codeBtn, I18nService.t('btn.copyCode'), I18nService.t('btn.copied'));
         }
       }
@@ -2470,6 +2579,11 @@ class SidePanelController {
     if (themeToggle) {
       themeToggle.addEventListener('click', () => this.toggleTheme());
     }
+
+    this.colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    this.colorSchemeQuery.addEventListener('change', () => {
+      if (this.settingsTheme === 'auto') this.applyTheme('auto');
+    });
   }
 
   /** Register settings and editor modal dismissal behavior. */
@@ -2485,13 +2599,30 @@ class SidePanelController {
       }
     });
     document.addEventListener('keydown', (event) => {
-      if (event.key !== 'Escape') return;
-      if (!this.profileEditor.classList.contains('hidden')) {
-        this.closeProfileEditor();
+      const activeModal = !this.profileEditor.classList.contains('hidden')
+        ? this.profileEditor
+        : !this.settingsModal.classList.contains('hidden')
+          ? this.settingsModal
+          : null;
+      if (!activeModal) return;
+      if (event.key === 'Escape') {
+        if (activeModal === this.profileEditor) this.closeProfileEditor();
+        else this.closeSettings();
         return;
       }
-      if (!this.settingsModal.classList.contains('hidden')) {
-        this.closeSettings();
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(activeModal.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+      )).filter(element => !element.hidden && element.offsetParent !== null);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     });
   }
@@ -2528,8 +2659,8 @@ class SidePanelController {
   /** Register the storage fallback for context-menu handoff. */
   private setupContextStorageEvents(): void {
     chrome.storage.onChanged.addListener((changes, namespace) => {
-      if (namespace === 'local' && changes['contextSelection']) {
-        const newValue = changes['contextSelection'].newValue;
+      if (namespace === 'session' && changes[STORAGE_KEYS.CONTEXT_SELECTION]) {
+        const newValue = changes[STORAGE_KEYS.CONTEXT_SELECTION].newValue;
         if (newValue && newValue.content) {
           this.handleContextFromMenu(newValue);
         }
@@ -2546,7 +2677,7 @@ class SidePanelController {
     // The live message consumed the handoff — remove the storage copy the
     // background saved alongside it, or the next panel startup would
     // resurrect this stale selection via checkPendingContext.
-    void chrome.storage.local.remove('contextSelection').catch(() => {});
+    void chrome.storage.session.remove(STORAGE_KEYS.CONTEXT_SELECTION).catch(() => {});
     // An explicitly selected text replaces a pending quote — only one
     // reference can be active at a time
     this.clearQuote();
@@ -2641,6 +2772,7 @@ class SidePanelController {
     if (langText) langText.textContent = settings.language === 'zh' ? '中' : 'EN';
 
     // Set theme
+    this.settingsTheme = settings.theme;
     this.applyTheme(settings.theme);
 
     // Check if there's context from right-click menu
@@ -2652,8 +2784,8 @@ class SidePanelController {
    */
   private async checkPendingContext(): Promise<void> {
     try {
-      const result = await chrome.storage.local.get('contextSelection');
-      const pendingContext = sanitizePageContext(result['contextSelection']);
+      const result = await chrome.storage.session.get(STORAGE_KEYS.CONTEXT_SELECTION);
+      const pendingContext = sanitizePageContext(result[STORAGE_KEYS.CONTEXT_SELECTION]);
 
       if (pendingContext && pendingContext.content) {
         // Set as current context
@@ -2666,7 +2798,7 @@ class SidePanelController {
         this.activateComposer();
 
         // Clear the pending context
-        await chrome.storage.local.remove('contextSelection');
+        await chrome.storage.session.remove(STORAGE_KEYS.CONTEXT_SELECTION);
       }
     } catch (error) {
       console.error('Failed to check pending context:', error);
@@ -3228,14 +3360,13 @@ Instructions:
    * Start a new chat session
    */
   private async newChat(): Promise<void> {
-    // Save current conversation to history if it has messages
-    if (this.messages.length > 0) {
-      await this.saveConversationToHistory();
-    }
-
-    // Start fresh
+    // Start fresh. Do not copy private messages into a second, invisible
+    // archive: the user expects a new chat to remove the previous transcript.
     this.messages = [];
-    await StorageService.clearChatHistory();
+    await Promise.all([
+      StorageService.clearChatHistory(),
+      StorageService.clearConversationHistory()
+    ]);
     this.renderMessages();
     this.currentContext = null;
     this.contextDismissed = false;
@@ -3246,34 +3377,6 @@ Instructions:
 
     // Show current page in preview bar
     await this.autoFetchCurrentPage();
-  }
-
-  /**
-   * Save current conversation to history
-   */
-  private async saveConversationToHistory(): Promise<void> {
-    try {
-      const result = await chrome.storage.local.get(STORAGE_KEYS.CONVERSATIONS);
-      const history = result[STORAGE_KEYS.CONVERSATIONS] || [];
-
-      const conversation = {
-        id: this.generateId(),
-        timestamp: Date.now(),
-        messages: [...this.messages]
-      };
-
-      // Add to history, limit to last 10 conversations
-      history.push(conversation);
-      if (history.length > 10) {
-        history.splice(0, history.length - 10);
-      }
-
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.CONVERSATIONS]: history
-      });
-    } catch (error) {
-      console.error('Failed to save conversation to history:', error);
-    }
   }
 
   /**
@@ -3457,10 +3560,12 @@ Instructions:
    */
   private async toggleTheme(): Promise<void> {
     const settings = await StorageService.getSettings();
-    const currentTheme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-    const newTheme: AppSettings['theme'] = currentTheme === 'light' ? 'dark' : 'light';
+    const themes: AppSettings['theme'][] = ['auto', 'light', 'dark'];
+    const currentIndex = themes.indexOf(settings.theme);
+    const newTheme = themes[(currentIndex + 1) % themes.length];
 
     settings.theme = newTheme;
+    this.settingsTheme = newTheme;
     await StorageService.saveSettings(settings);
     this.applyTheme(newTheme);
   }
@@ -3811,9 +3916,7 @@ Instructions:
    */
   private async saveChatHistory(): Promise<void> {
     try {
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.CHAT_HISTORY]: this.messages.slice(-LIMITS.MAX_HISTORY_MESSAGES)
-      });
+      await StorageService.saveChatHistory(this.messages);
     } catch (error) {
       console.error('Failed to save chat history:', error);
     }

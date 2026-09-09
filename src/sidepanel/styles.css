@@ -31,6 +31,7 @@
   --accent-green-light: rgba(52, 211, 153, 0.1);
   --accent-red: #F87171;
   --accent-red-light: rgba(248, 113, 113, 0.12);
+  --error-text: #FCA5A5;
 
   /* Text Colors */
   --text-primary: #F0F2F8;
@@ -92,6 +93,7 @@
   --accent-green-light: rgba(22, 134, 93, 0.08);
   --accent-red: #b42318;
   --accent-red-light: rgba(180, 35, 24, 0.08);
+  --error-text: #B42318;
   --text-primary: #152033;
   --text-secondary: #566176;
   --text-muted: #7d8798;
@@ -127,6 +129,17 @@ body {
   background-image:
     radial-gradient(circle at 12% -10%, rgba(74, 158, 255, 0.11), transparent 34%),
     radial-gradient(circle at 95% 8%, rgba(229, 161, 74, 0.09), transparent 30%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 #app {
@@ -546,12 +559,16 @@ body {
 
 .markdown-body .md-lang {
   display: block;
+  max-width: calc(100% - 28px);
+  overflow: hidden;
   margin-bottom: 2px;
   font-size: 10px;
   line-height: 1.2;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .markdown-body .md-quote {
@@ -755,7 +772,7 @@ body {
 }
 
 .message.error .message-content {
-  color: #FCA5A5;
+  color: var(--error-text);
 }
 
 /* ========================================
@@ -1472,7 +1489,6 @@ body {
   background: var(--bg-surface);
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 13px;
   font-size: 13px;
   transition: all 0.15s ease;
 }

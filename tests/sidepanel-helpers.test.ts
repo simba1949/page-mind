@@ -3,6 +3,7 @@ import {
   endpointOriginPattern,
   modelOmitsTemperature,
   openAICompatibleErrorMessage,
+  pageOriginPattern,
   parseCustomModels,
   sanitizeAppSettings,
   stripThinkTags
@@ -49,6 +50,17 @@ describe('endpointOriginPattern', () => {
 
   test('supports localhost endpoints without widening to every port', () => {
     expect(endpointOriginPattern('http://localhost:3000/v1')).toBe('http://localhost:3000/*');
+  });
+});
+
+describe('pageOriginPattern', () => {
+  test('limits page access to the current HTTPS origin', () => {
+    expect(pageOriginPattern('https://news.example.com/article?id=1')).toBe('https://news.example.com/*');
+  });
+
+  test('allows local development pages but rejects arbitrary HTTP pages', () => {
+    expect(pageOriginPattern('http://localhost:3000/app')).toBe('http://localhost:3000/*');
+    expect(pageOriginPattern('http://example.com/app')).toBeNull();
   });
 });
 

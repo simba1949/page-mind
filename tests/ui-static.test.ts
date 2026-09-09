@@ -21,6 +21,11 @@ const ruleBlock = (source: string, selector: string): string => {
 };
 
 describe('styles.css: light theme keeps a single accent family', () => {
+  test('supports reduced-motion preferences and theme-aware errors', () => {
+    expect(css).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(css).toContain('--error-text');
+    expect(css).toContain('color: var(--error-text)');
+  });
   test('the light send button only lights up when enabled', () => {
     // The specificity fix from this round: the light-theme override used to
     // outrank .send-btn:disabled, leaving a bright blue idle button.
@@ -64,7 +69,7 @@ describe('manifest.json: least-privilege permission surface', () => {
   test('requests exactly the expected permissions', () => {
     expect([...manifest.permissions].sort()).toEqual([
       'activeTab', 'contextMenus', 'scripting', 'sidePanel',
-      'storage', 'unlimitedStorage', 'webNavigation'
+      'storage', 'webNavigation'
     ].sort());
   });
 
@@ -121,7 +126,7 @@ describe('context-menu handoff: storage is the reliable channel', () => {
   test('the background saves the selection before trying to notify', () => {
     // Ordering matters: the panel reads contextSelection during startup, so
     // the write must precede the (possibly failing) sendMessage.
-    const save = bg.indexOf("save('contextSelection'");
+    const save = bg.indexOf("saveSession('contextSelection'");
     const send = bg.indexOf("type: 'CONTEXT_FROM_MENU'");
     expect(save).toBeGreaterThan(-1);
     expect(send).toBeGreaterThan(-1);
@@ -134,7 +139,7 @@ describe('context-menu handoff: storage is the reliable channel', () => {
     const at = panel.indexOf('private handleContextFromMenu');
     expect(at).toBeGreaterThan(-1);
     const body = panel.slice(at, panel.indexOf('\n  /**', at));
-    expect(body).toContain("chrome.storage.local.remove('contextSelection')");
+    expect(body).toContain('chrome.storage.session.remove(STORAGE_KEYS.CONTEXT_SELECTION)');
   });
 });
 

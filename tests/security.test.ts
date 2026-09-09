@@ -83,5 +83,11 @@ describe('renderMarkdown security', () => {
       const html = renderMarkdown('`a<b>` then ```js\nx<y>\n``` then https://e.com');
       expect(html).not.toMatch(/[\u0000\u0001]/);
     });
+
+    test('fenced code stays escaped in display and copy metadata', () => {
+      const html = renderMarkdown('```js\n<img src=x onerror="alert(1)">\n```');
+      expect(html).not.toContain('<img');
+      expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+    });
   });
 });

@@ -5,6 +5,7 @@ function backgroundMock() {
   mock.sidePanel.setPanelBehavior.mockResolvedValue(undefined);
   mock.sidePanel.open.mockResolvedValue(undefined);
   mock.storage.local.set.mockResolvedValue(undefined);
+  mock.storage.session.set.mockResolvedValue(undefined);
   mock.runtime.sendMessage.mockResolvedValue(undefined);
   return {
     ...mock,
@@ -57,7 +58,7 @@ test('context-menu opening still happens synchronously within the user gesture',
   onClick({ menuItemId: 'askAI', selectionText: 'selected', pageUrl: 'https://example.com/' }, { id: 7 });
   expect(mock.sidePanel.open).toHaveBeenCalledWith({ tabId: 7 });
   expect(mock.sidePanel.open.mock.invocationCallOrder[0])
-    .toBeLessThan(mock.storage.local.set.mock.invocationCallOrder[0]);
+    .toBeLessThan(mock.storage.session.set.mock.invocationCallOrder[0]);
   await Promise.resolve();
 });
 

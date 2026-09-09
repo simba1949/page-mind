@@ -40,6 +40,20 @@ describe('renderMarkdown', () => {
       expect(html).not.toContain('codegraph  </code>');
     });
 
+    test('normalizes Windows line endings and empty fenced blocks', () => {
+      const html = renderMarkdown('```js\r\n\r\n  const x = 1;\r\n\r\n```');
+      expect(html).toContain('<code>const x = 1;</code>');
+      expect(renderMarkdown('```js\n\n```')).toContain('<code></code>');
+    });
+
+    test('keeps original fenced whitespace available for copying', () => {
+      const html = renderMarkdown('```sh\r\n\r\n  echo "hello"  \r\n\r\n```');
+      const encodedCopyCode = html.match(/data-copy-code="([^"]*)"/)?.[1];
+      expect(encodedCopyCode).toBeDefined();
+      expect(decodeURIComponent(encodedCopyCode!)).toBe('\r\n  echo "hello"  \r\n\r\n');
+      expect(html).toContain('<code>echo &quot;hello&quot;</code>');
+    });
+
     test('preserves relative indentation inside multi-line code', () => {
       const html = renderMarkdown('```js\n\n  function run() {\n    return true;\n  }\n\n```');
       expect(html).toContain('<code>function run() {\n  return true;\n}</code>');
