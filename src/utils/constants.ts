@@ -4,7 +4,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   profiles: [],
   activeProfileId: null,
   language: 'zh',
-  theme: 'auto'
+  theme: 'light'
 };
 
 export const API_PRESETS: Record<ApiFormat, { name: string; baseUrl: string; models: string[] }> = {

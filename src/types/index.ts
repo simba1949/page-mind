@@ -29,7 +29,7 @@ export interface AppSettings {
   profiles: ApiProfile[];
   activeProfileId: string | null;
   language: 'en' | 'zh';
-  theme: 'light' | 'dark' | 'auto';
+  theme: 'light' | 'dark';
 }
 
 // Message types

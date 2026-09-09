@@ -235,6 +235,10 @@ export function sanitizeAttachments(value: unknown): MessageAttachment[] | undef
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
+export function nextThemeFromEffectiveTheme(theme: 'light' | 'dark'): 'light' | 'dark' {
+  return theme === 'light' ? 'dark' : 'light';
+}
+
 function sanitizeStoredMessage(value: unknown): ChatMessage | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Partial<ChatMessage>;
@@ -286,7 +290,7 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
     ? stored.activeProfileId : (profiles[0]?.id || null);
   return { profiles, activeProfileId,
     language: stored.language === 'zh' ? 'zh' : 'en',
-    theme: stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'auto' };
+    theme: stored.theme === 'dark' ? 'dark' : 'light' };
 }
 
 function sanitizeProfile(value: unknown, index: number): ApiProfile | null {
@@ -1032,13 +1036,27 @@ export function pageOriginPattern(value: unknown): string | null {
   }
 }
 
-async function currentPageOriginPattern(): Promise<string | null> {
+export function isWebPageUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || !value) return false;
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function currentActiveTabUrl(): Promise<string> {
   try {
     const response = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB' });
-    return pageOriginPattern(response?.data?.url);
+    return typeof response?.data?.url === 'string' ? response.data.url : '';
   } catch {
-    return null;
+    return '';
   }
+}
+
+async function currentPageOriginPattern(): Promise<string | null> {
+  return pageOriginPattern(await currentActiveTabUrl());
 }
 
 /**
@@ -1912,8 +1930,6 @@ class SidePanelController {
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private streamRenderRaf: number | null = null;
-  private settingsTheme: AppSettings['theme'] = 'auto';
-  private colorSchemeQuery: MediaQueryList | null = null;
   private profileEditor!: HTMLElement;
   private closeProfileEditorBtn!: HTMLButtonElement;
   private profileEditorTitle!: HTMLElement;
@@ -2086,6 +2102,13 @@ class SidePanelController {
     // Suppressed while a quote is pending — the quote is the reference
     try {
       if (this.quotedReply) return;
+      const activeTabUrl = await currentActiveTabUrl();
+      if (!isWebPageUrl(activeTabUrl)) {
+        // New-tab, browser-internal, and extension pages are not web pages:
+        // never show a stale reference or offer site-access authorization.
+        this.clearUnavailablePageContext();
+        return;
+      }
       let context: PageContext | null = null;
 
       if (preferSelection) {
@@ -2121,8 +2144,8 @@ class SidePanelController {
           this.showPagePreviewBar(context.title);
         }
       } else {
-        // Nothing readable: either the tab isn't a web page, or site access
-        // isn't granted. Only the latter is fixable — offer it once.
+        // Nothing readable on an actual web page: site access may be missing.
+        // Only that case is fixable — offer authorization once.
         const hasAccess = await ensurePageAccessPermission(false);
         if (hasAccess) {
           this.previewBar.classList.add('hidden');
@@ -2579,11 +2602,6 @@ class SidePanelController {
     if (themeToggle) {
       themeToggle.addEventListener('click', () => this.toggleTheme());
     }
-
-    this.colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    this.colorSchemeQuery.addEventListener('change', () => {
-      if (this.settingsTheme === 'auto') this.applyTheme('auto');
-    });
   }
 
   /** Register settings and editor modal dismissal behavior. */
@@ -2632,7 +2650,7 @@ class SidePanelController {
     // Listen for context from right-click menu
     chrome.runtime.onMessage.addListener((message) => {
       if (message.type === 'CONTEXT_FROM_MENU' && message.data) {
-        this.handleContextFromMenu(message.data);
+        void this.handleContextFromMenu(message.data);
       }
       if (message.type === 'TAB_CHANGED' || message.type === 'PAGE_REFRESHED') {
         console.log('Received refresh notification:', message.type);
@@ -2640,12 +2658,12 @@ class SidePanelController {
         // Cancel any pending refresh to avoid race conditions when switching tabs rapidly
         if (this.refreshTimer) clearTimeout(this.refreshTimer);
         this.currentContext = null;
-        this.contextDismissed = false;
+        this.contextDismissed = Boolean(message.url) && !isWebPageUrl(message.url);
         this.previewBar.className = 'preview-bar hidden';
         // Instant feedback: when the event carries the new page's identity
         // (visible once site access is granted), show it right away; full
         // content is captured a moment later. Not while a quote is pending.
-        if (!this.quotedReply && (message.title || message.url)) {
+        if (!this.quotedReply && isWebPageUrl(message.url)) {
           this.showPagePreviewBar(message.title || message.url);
         }
         this.refreshTimer = setTimeout(() => {
@@ -2662,7 +2680,7 @@ class SidePanelController {
       if (namespace === 'session' && changes[STORAGE_KEYS.CONTEXT_SELECTION]) {
         const newValue = changes[STORAGE_KEYS.CONTEXT_SELECTION].newValue;
         if (newValue && newValue.content) {
-          this.handleContextFromMenu(newValue);
+          void this.handleContextFromMenu(newValue);
         }
       }
     });
@@ -2671,9 +2689,17 @@ class SidePanelController {
   /**
    * Handle context received from right-click menu
    */
-  private handleContextFromMenu(contextData: any): void {
+  private async handleContextFromMenu(contextData: any): Promise<void> {
     const context = sanitizePageContext(contextData);
     if (!context) return;
+    const activeTabUrl = await currentActiveTabUrl();
+    if (!isWebPageUrl(activeTabUrl) ||
+        SidePanelController.urlForContextComparison(activeTabUrl) !==
+          SidePanelController.urlForContextComparison(context.url)) {
+      await chrome.storage.session.remove(STORAGE_KEYS.CONTEXT_SELECTION).catch(() => {});
+      this.clearPageContext();
+      return;
+    }
     // The live message consumed the handoff — remove the storage copy the
     // background saved alongside it, or the next panel startup would
     // resurrect this stale selection via checkPendingContext.
@@ -2715,6 +2741,20 @@ class SidePanelController {
     this.previewText.textContent = '';
     // Default to current page after clearing selection
     void this.autoFetchCurrentPage();
+  }
+
+  /** Hide page context on tabs where the extension must not read the page. */
+  private clearUnavailablePageContext(): void {
+    this.clearPageContext();
+    this.contextDismissed = true;
+  }
+
+  /** Clear the visible page reference without disabling future page capture. */
+  private clearPageContext(): void {
+    this.currentContext = null;
+    this.previewBar.className = 'preview-bar hidden';
+    this.previewText.textContent = '';
+    this.previewBar.querySelector('.preview-authorize')?.remove();
   }
 
   /**
@@ -2772,7 +2812,6 @@ class SidePanelController {
     if (langText) langText.textContent = settings.language === 'zh' ? '中' : 'EN';
 
     // Set theme
-    this.settingsTheme = settings.theme;
     this.applyTheme(settings.theme);
 
     // Check if there's context from right-click menu
@@ -2784,22 +2823,31 @@ class SidePanelController {
    */
   private async checkPendingContext(): Promise<void> {
     try {
+      const activeTabUrl = await currentActiveTabUrl();
       const result = await chrome.storage.session.get(STORAGE_KEYS.CONTEXT_SELECTION);
       const pendingContext = sanitizePageContext(result[STORAGE_KEYS.CONTEXT_SELECTION]);
 
-      if (pendingContext && pendingContext.content) {
-        // Set as current context
-        this.currentContext = pendingContext;
-        this.contextDismissed = false;
-        this.showSelectionBar(pendingContext.content);
+      if (!pendingContext || !pendingContext.content) return;
 
-        // Show a prompt to the user
-        this.messageInput.placeholder = `询问关于选中的文字: "${pendingContext.content.substring(0, 30)}..."`;
-        this.activateComposer();
-
-        // Clear the pending context
+      if (!isWebPageUrl(activeTabUrl) ||
+          SidePanelController.urlForContextComparison(activeTabUrl) !==
+            SidePanelController.urlForContextComparison(pendingContext.url)) {
         await chrome.storage.session.remove(STORAGE_KEYS.CONTEXT_SELECTION);
+        this.clearPageContext();
+        return;
       }
+
+      // Set as current context
+      this.currentContext = pendingContext;
+      this.contextDismissed = false;
+      this.showSelectionBar(pendingContext.content);
+
+      // Show a prompt to the user
+      this.messageInput.placeholder = `询问关于选中的文字: "${pendingContext.content.substring(0, 30)}..."`;
+      this.activateComposer();
+
+      // Clear the pending context
+      await chrome.storage.session.remove(STORAGE_KEYS.CONTEXT_SELECTION);
     } catch (error) {
       console.error('Failed to check pending context:', error);
     }
@@ -2910,6 +2958,12 @@ class SidePanelController {
    */
   private async fetchCurrentPageContext(): Promise<void> {
     try {
+      const activeTabUrl = await currentActiveTabUrl();
+      if (!isWebPageUrl(activeTabUrl)) {
+        this.clearUnavailablePageContext();
+        return;
+      }
+
       // This runs as part of a user-initiated send, so it's safe to prompt
       // for the page-access permission if it isn't already granted (e.g. the
       // user switched tabs after opening the side panel, which invalidates
@@ -3560,12 +3614,11 @@ Instructions:
    */
   private async toggleTheme(): Promise<void> {
     const settings = await StorageService.getSettings();
-    const themes: AppSettings['theme'][] = ['auto', 'light', 'dark'];
-    const currentIndex = themes.indexOf(settings.theme);
-    const newTheme = themes[(currentIndex + 1) % themes.length];
+    // Toggle the theme that is actually visible so every click changes the UI.
+    const effectiveTheme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+    const newTheme = nextThemeFromEffectiveTheme(effectiveTheme);
 
     settings.theme = newTheme;
-    this.settingsTheme = newTheme;
     await StorageService.saveSettings(settings);
     this.applyTheme(newTheme);
   }
@@ -3857,13 +3910,8 @@ Instructions:
   /**
    * Apply theme
    */
-  private applyTheme(theme: 'light' | 'dark' | 'auto'): void {
-    if (theme === 'auto') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-    } else {
-      document.documentElement.setAttribute('data-theme', theme);
-    }
+  private applyTheme(theme: 'light' | 'dark'): void {
+    document.documentElement.setAttribute('data-theme', theme);
   }
 
   /**

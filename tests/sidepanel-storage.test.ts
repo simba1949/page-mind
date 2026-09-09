@@ -43,7 +43,7 @@ describe('side panel credential storage', () => {
   });
 
   test('encrypts remembered API keys before persistent storage', async () => {
-    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'secret-key', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'auto' });
+    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'secret-key', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'light' });
 
     const savedSettings = chromeMock.storage.local.set.mock.calls.map(([value]) => value?.app_settings).find(Boolean) as { profiles: Array<{ apiKey: string }> };
 
@@ -52,7 +52,7 @@ describe('side panel credential storage', () => {
   });
 
   test('keeps non-remembered API keys in session storage only', async () => {
-    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'session-secret', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: false, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'auto' });
+    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'session-secret', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: false, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'light' });
 
     const savedSettings = chromeMock.storage.local.set.mock.calls.map(([value]) => value?.app_settings).find(Boolean) as { profiles: Array<{ apiKey: string }> };
 
@@ -75,7 +75,7 @@ describe('side panel credential storage', () => {
       return Promise.resolve();
     });
 
-    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'round-trip-secret', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'auto' });
+    await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'round-trip-secret', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'light' });
 
     await expect(StorageService.getSettings()).resolves.toMatchObject({
       profiles: [{ apiKey: 'round-trip-secret' }]
