@@ -7,7 +7,6 @@
   "permissions": [
     "activeTab",
     "storage",
-    "unlimitedStorage",
     "sidePanel",
     "scripting",
     "contextMenus",

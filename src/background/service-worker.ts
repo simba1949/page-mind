@@ -41,6 +41,15 @@ class BackgroundStorageService {
       throw error;
     }
   }
+
+  static async saveSession(key: string, data: unknown): Promise<void> {
+    try {
+      await chrome.storage.session.set({ [key]: data });
+    } catch (error) {
+      console.error('Session storage save error:', error);
+      throw error;
+    }
+  }
 }
 
 /**
@@ -401,7 +410,7 @@ class BackgroundService {
             // Store the selected text temporarily. This is the reliable
             // channel: a panel that opens right now reads it in
             // checkPendingContext during startup.
-            await BackgroundStorageService.save('contextSelection', contextData);
+            await BackgroundStorageService.saveSession('contextSelection', contextData);
 
             // Live notification for a panel that is already open — the panel
             // does not watch storage events, so without this a menu selection

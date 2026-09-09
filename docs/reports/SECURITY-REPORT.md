@@ -52,7 +52,7 @@
 
 ### F7（凭据面 · 已防护 + 已测）API 密钥
 
-- 加密存储（AES-GCM、随机 IV、导入密钥校验，`crypto.test.ts`）；「记住密钥」勾选时只将密文写入 `chrome.storage.local`，未勾选时密钥只进 `chrome.storage.session`（浏览器关闭即清，`sidepanel-storage.test.ts` 验证不落明文）；输入框 `type="password"` + `autocomplete="new-password"`（防浏览器把密钥当账号密码自动填充/同步）。
+- 本地配置保护（AES-GCM、随机 IV、导入密钥校验，`crypto.test.ts`）；「在此设备保存密钥」勾选时只将受保护值写入 `chrome.storage.local`，未勾选时密钥只进 `chrome.storage.session`（浏览器关闭即清，`sidepanel-storage.test.ts` 验证不落明文）。该保护不等同于独立 OS 密钥链；输入框 `type="password"` + `autocomplete="new-password"`（防浏览器把密钥当账号密码自动填充/同步）。
 
 ### F8（CSP 面 · 默认安全 + 已测）内容安全策略
 
@@ -79,8 +79,8 @@
 |---|---|---|---|
 | R1 | 低 | 自定义端点允许 `http://`（localhost 除外场景），明文 http 端点会明文传输密钥与对话（T5） | 保存设置时对非 localhost 的 http 端点弹警告 |
 | R2 | 低 | SSE 流式解析与 service worker 消息处理无单测（`sidepanel.ts` 覆盖率 16% 的主因） | 抽纯函数后补测 |
-| R3 | 信息 | 聊天历史（含附件）明文存 `chrome.storage.local`；密钥已加密但历史未加密 | 如需更强保护可复用现有 crypto 基建对历史整体加密 |
-| R4 | 信息 | 「记住密钥」勾选时密钥加密落盘，本机管理员仍可解密（密钥派生存于同一 profile） | 属产品定位内的可接受残留 |
+| R3 | 已处理 | 聊天历史（含附件）曾明文存 `chrome.storage.local` | 当前改为 `chrome.storage.session`，浏览器关闭后清除 |
+| R4 | 信息 | 保存到设备的密钥受同一 Chrome profile 保护，本机管理员仍可解密 | 已在 UI 和文档中明确该边界；更强保护需用户密码或 OS 密钥链 |
 
 ## 五、结论
 
