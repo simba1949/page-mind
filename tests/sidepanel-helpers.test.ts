@@ -43,6 +43,23 @@ describe('sanitizeAppSettings', () => {
     expect(settings.profiles).toHaveLength(10);
     expect(settings.activeProfileId).toBe('p0');
   });
+
+  test('preserves sanitized quick actions in the settings object', () => {
+    const settings = sanitizeAppSettings({
+      profiles: [],
+      activeProfileId: null,
+      language: 'zh',
+      theme: 'light',
+      quickActions: [{ kind: 'custom', id: 'review', label: '  复核  ', prompt: '  请复核当前页面  ' }]
+    });
+
+    expect(settings.quickActions).toEqual([{
+      kind: 'custom',
+      id: 'review',
+      label: '复核',
+      prompt: '请复核当前页面'
+    }]);
+  });
 });
 
 describe('endpointOriginPattern', () => {

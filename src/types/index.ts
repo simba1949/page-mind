@@ -25,11 +25,28 @@ export interface APIConfig {
   temperature?: number;
 }
 
+export type BuiltInQuickActionId = 'summarize' | 'explain' | 'translate';
+
+export interface BuiltInQuickAction {
+  kind: 'builtin';
+  id: BuiltInQuickActionId;
+}
+
+export interface CustomQuickAction {
+  kind: 'custom';
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+export type QuickActionItem = BuiltInQuickAction | CustomQuickAction;
+
 export interface AppSettings {
   profiles: ApiProfile[];
   activeProfileId: string | null;
   language: 'en' | 'zh';
   theme: 'light' | 'dark';
+  quickActions?: QuickActionItem[];
 }
 
 // Message types

@@ -6,7 +6,8 @@ import {
   ENCRYPTED_API_KEY_PREFIX,
   LIMITS,
   STORAGE_KEYS,
-  STORAGE_SCHEMA_VERSION
+  STORAGE_SCHEMA_VERSION,
+  SETTINGS_PROTOCOL_VERSION
 } from '../utils/constants.js';
 import type {
   APIConfig,
@@ -15,7 +16,9 @@ import type {
   AppSettings,
   ChatMessage,
   MessageAttachment,
-  PageContext
+  PageContext,
+  BuiltInQuickActionId,
+  QuickActionItem
 } from '../types/index.js';
 import { focusComposerInput, isNativePasteTarget, pastePlainText, shouldFocusComposer } from './composer.js';
 
@@ -280,6 +283,106 @@ function newProfileId(): string {
   return typeof cryptoApi?.randomUUID === 'function' ? cryptoApi.randomUUID() : `profile-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function newQuickActionId(): string {
+  const cryptoApi = (globalThis as typeof globalThis & { crypto?: Crypto }).crypto;
+  return typeof cryptoApi?.randomUUID === 'function' ? `quick-${cryptoApi.randomUUID()}` : `quick-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+interface BuiltInQuickActionDefinition {
+  id: BuiltInQuickActionId;
+  icon: string;
+  labelKey: string;
+  promptKey: string;
+}
+
+const BUILTIN_QUICK_ACTIONS: BuiltInQuickActionDefinition[] = [
+  { id: 'summarize', icon: '▤', labelKey: 'label.summarize', promptKey: 'quick.summarizePrompt' },
+  { id: 'explain', icon: '◎', labelKey: 'label.explain', promptKey: 'quick.explainPrompt' },
+  { id: 'translate', icon: '文', labelKey: 'label.translate', promptKey: 'quick.translatePrompt' }
+];
+
+const BUILTIN_QUICK_ACTION_IDS = new Set<BuiltInQuickActionId>(
+  BUILTIN_QUICK_ACTIONS.map(action => action.id)
+);
+
+function isSafeQuickActionId(value: unknown): value is string {
+  return typeof value === 'string' && /^[\w-]{1,100}$/.test(value);
+}
+
+/** Normalize untrusted persisted quick actions without translating user data. */
+export function sanitizeQuickActions(value: unknown): QuickActionItem[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const cleaned: QuickActionItem[] = [];
+  const seen = new Set<string>();
+  let customCount = 0;
+
+  for (const item of value.slice(0, LIMITS.MAX_QUICK_ACTION_ITEMS)) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Record<string, unknown>;
+
+    if (raw.kind === 'builtin' && BUILTIN_QUICK_ACTION_IDS.has(raw.id as BuiltInQuickActionId)) {
+      const id = raw.id as BuiltInQuickActionId;
+      const key = `builtin:${id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        cleaned.push({ kind: 'builtin', id });
+      }
+      continue;
+    }
+
+    if (raw.kind !== 'custom' || customCount >= LIMITS.MAX_CUSTOM_QUICK_ACTIONS ||
+        !isSafeQuickActionId(raw.id) || typeof raw.label !== 'string' || typeof raw.prompt !== 'string') {
+      continue;
+    }
+
+    const id = raw.id;
+    const label = raw.label.trim().slice(0, LIMITS.MAX_QUICK_ACTION_LABEL_LENGTH);
+    const prompt = raw.prompt.trim().slice(0, LIMITS.MAX_QUICK_ACTION_PROMPT_LENGTH);
+    const key = `custom:${id}`;
+    if (!label || !prompt || seen.has(key)) continue;
+
+    seen.add(key);
+    cleaned.push({ kind: 'custom', id, label, prompt });
+    customCount += 1;
+  }
+
+  return cleaned.some(item => item.kind === 'custom') ? cleaned : undefined;
+}
+
+/** Resolve the final visible list, applying the built-in fallback rules. */
+export function getEffectiveQuickActions(value: unknown): QuickActionItem[] {
+  const configured = sanitizeQuickActions(value);
+  if (!configured) {
+    return BUILTIN_QUICK_ACTIONS.map(action => ({ kind: 'builtin', id: action.id }));
+  }
+
+  const customCount = configured.filter(item => item.kind === 'custom').length;
+  if (customCount >= BUILTIN_QUICK_ACTIONS.length) {
+    return configured.filter(item => item.kind === 'custom');
+  }
+
+  const requiredBuiltinCount = BUILTIN_QUICK_ACTIONS.length - customCount;
+  const result: QuickActionItem[] = [];
+  const seen = new Set<string>();
+
+  const add = (item: QuickActionItem): void => {
+    const key = item.kind === 'builtin' ? `builtin:${item.id}` : `custom:${item.id}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(item);
+    }
+  };
+
+  for (const item of configured) {
+    if (item.kind === 'custom' || result.filter(entry => entry.kind === 'builtin').length < requiredBuiltinCount) {
+      add(item);
+    }
+  }
+
+  return result;
+}
+
 /** Normalize untrusted settings read from extension storage. */
 export function sanitizeAppSettings(value: unknown): AppSettings {
   const stored = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -288,9 +391,11 @@ export function sanitizeAppSettings(value: unknown): AppSettings {
     .map((raw, index) => sanitizeProfile(raw, index)).filter(Boolean) as ApiProfile[];
   const activeProfileId = typeof stored.activeProfileId === 'string' && profiles.some(p => p.id === stored.activeProfileId)
     ? stored.activeProfileId : (profiles[0]?.id || null);
+  const quickActions = sanitizeQuickActions(stored.quickActions);
   return { profiles, activeProfileId,
     language: stored.language === 'zh' ? 'zh' : 'en',
-    theme: stored.theme === 'dark' ? 'dark' : 'light' };
+    theme: stored.theme === 'dark' ? 'dark' : 'light',
+    ...(quickActions ? { quickActions } : {}) };
 }
 
 function sanitizeProfile(value: unknown, index: number): ApiProfile | null {
@@ -323,15 +428,29 @@ export class StorageService {
 
   /** Initialize the current settings storage schema. */
   static async prepareStorage(): Promise<void> {
-    const result = await chrome.storage.local.get(STORAGE_KEYS.SCHEMA_VERSION);
-    const storedVersion = Number(result[STORAGE_KEYS.SCHEMA_VERSION]) || 0;
-    if (storedVersion >= STORAGE_SCHEMA_VERSION) return;
+    const result = await chrome.storage.local.get([
+      STORAGE_KEYS.SCHEMA_VERSION,
+      STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION
+    ]);
+    const storedVersion = typeof result[STORAGE_KEYS.SCHEMA_VERSION] === 'string'
+      ? result[STORAGE_KEYS.SCHEMA_VERSION]
+      : '';
+    const storedProtocolVersion = typeof result[STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION] === 'string'
+      ? result[STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION]
+      : '';
+    const hasStoredProtocolVersion = Object.prototype.hasOwnProperty.call(
+      result,
+      STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION
+    );
+    const settingsProtocolChanged = hasStoredProtocolVersion &&
+      storedProtocolVersion !== SETTINGS_PROTOCOL_VERSION;
+    const settingsProtocolNeedsRecord = !hasStoredProtocolVersion;
+    const schemaNeedsUpdate = storedVersion !== STORAGE_SCHEMA_VERSION;
+    if (!settingsProtocolChanged && !settingsProtocolNeedsRecord && !schemaNeedsUpdate) return;
 
-    // Migrations must preserve settings and credentials. The previous
-    // implementation deleted them whenever the schema version changed,
-    // turning a normal extension update into silent data loss. Version 3
-    // retires the unused conversation archive while keeping live chat data.
-    if (storedVersion < 3) {
+    // Data-structure migrations are independent from the settings protocol.
+    // A project/schema version change must not erase user configuration.
+    if (schemaNeedsUpdate) {
       const legacy = await chrome.storage.local.get([
         STORAGE_KEYS.CHAT_HISTORY,
         STORAGE_KEYS.CONVERSATIONS
@@ -356,8 +475,27 @@ export class StorageService {
         STORAGE_KEYS.CONTEXT_SELECTION
       ]);
     }
+
+    // Only an existing, different settings protocol invalidates the persisted
+    // configuration. A missing marker is not proof of a protocol change: keep
+    // the sanitized legacy settings and record the current protocol instead.
+    if (settingsProtocolChanged) {
+      await Promise.all([
+        chrome.storage.local.remove([
+          STORAGE_KEYS.SETTINGS,
+          STORAGE_KEYS.ENCRYPTION_KEY,
+          STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION
+        ]),
+        chrome.storage.session.remove([
+          STORAGE_KEYS.SESSION_API_KEYS,
+          STORAGE_KEYS.SESSION_API_KEY
+        ])
+      ]);
+    }
+
     await chrome.storage.local.set({
-      [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION
+      [STORAGE_KEYS.SCHEMA_VERSION]: STORAGE_SCHEMA_VERSION,
+      [STORAGE_KEYS.SETTINGS_PROTOCOL_VERSION]: SETTINGS_PROTOCOL_VERSION
     });
   }
 
@@ -438,7 +576,7 @@ export class StorageService {
         persistedProfiles.push({ ...profile, apiKey: profile.rememberApiKey && apiKey ? await this.encryptApiKey(apiKey) : '' });
       }
       const settingsToSave = { profiles: persistedProfiles, activeProfileId: sanitized.activeProfileId,
-        language: sanitized.language, theme: sanitized.theme };
+        language: sanitized.language, theme: sanitized.theme, quickActions: sanitized.quickActions || [] };
       await Promise.all([
         chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: settingsToSave }),
         Object.keys(sessionKeys).length
@@ -1725,6 +1863,24 @@ const translations = {
     'role.assistant': 'PageMind',
     'message.reasoning': 'Show thinking process',
     'settings.title': 'Settings',
+    'settings.quickActions': 'Quick actions',
+    'help.quickActions': 'Choose built-in actions and create your own prompts',
+    'settings.builtInQuickActions': 'Built-in actions',
+    'settings.quickActionOrder': 'Current display order',
+    'settings.builtInQuickAction': 'Built-in action',
+    'settings.quickActionName': 'Name',
+    'settings.quickActionPrompt': 'Prompt',
+    'settings.quickActionNamePlaceholder': 'e.g. Extract action items',
+    'settings.quickActionPromptPlaceholder': 'e.g. Extract the action items from this page and list them by priority.',
+    'help.quickActionPrompt': 'This prompt is sent as plain text when the action is clicked.',
+    'settings.addQuickAction': 'Add action',
+    'settings.editQuickAction': 'Edit action',
+    'settings.deleteQuickAction': 'Delete action',
+    'settings.moveUp': 'Move up',
+    'settings.moveDown': 'Move down',
+    'settings.saveQuickAction': 'Save action',
+    'settings.cancelQuickAction': 'Cancel',
+    'settings.quickActionCount': '{count}/10 custom actions',
     'settings.baseUrl': 'Base URL',
     'settings.apiProvider': 'API Format',
     'settings.remark': 'Name',
@@ -1776,6 +1932,10 @@ const translations = {
     'msg.htmlResponse': 'The endpoint returned an HTML page instead of JSON. Check the API endpoint URL (e.g. a missing /v1 path, or a website address instead of the API).',
     'msg.invalidJson': 'The endpoint returned an invalid JSON response',
     'msg.responseTooLarge': 'The endpoint response is too large to process safely',
+    'msg.quickActionNameRequired': 'Please enter a name for the quick action',
+    'msg.quickActionPromptRequired': 'Please enter a prompt for the quick action',
+    'msg.quickActionLimit': 'You can save up to 10 custom quick actions',
+    'msg.quickActionSaveFailed': 'Failed to save the quick action',
     'help.baseUrlV1Hint': 'Tip: OpenAI-compatible endpoints usually end with /v1 (e.g. https://api.openai.com/v1).',
     'settings.customModels': 'Custom models',
     'help.customModels': 'Comma-separated model IDs. When set, the model dropdown uses these directly instead of querying the API (for APIs without a model list endpoint).',
@@ -1809,6 +1969,24 @@ const translations = {
     'role.assistant': '页知',
     'message.reasoning': '查看思考过程',
     'settings.title': '设置',
+    'settings.quickActions': '快捷操作',
+    'help.quickActions': '选择内置操作，也可以创建自己的 Prompt',
+    'settings.builtInQuickActions': '内置操作',
+    'settings.quickActionOrder': '当前显示顺序',
+    'settings.builtInQuickAction': '内置操作',
+    'settings.quickActionName': '名称',
+    'settings.quickActionPrompt': 'Prompt',
+    'settings.quickActionNamePlaceholder': '例如：提取行动项',
+    'settings.quickActionPromptPlaceholder': '例如：请提取当前页面中的行动项，并按优先级列出。',
+    'help.quickActionPrompt': '点击快捷操作后，这段 Prompt 会作为纯文本发送。',
+    'settings.addQuickAction': '新增操作',
+    'settings.editQuickAction': '编辑操作',
+    'settings.deleteQuickAction': '删除操作',
+    'settings.moveUp': '上移',
+    'settings.moveDown': '下移',
+    'settings.saveQuickAction': '保存操作',
+    'settings.cancelQuickAction': '取消',
+    'settings.quickActionCount': '自定义操作 {count}/10',
     'settings.baseUrl': 'API 端点',
     'settings.apiProvider': 'API 格式',
     'settings.remark': '名称',
@@ -1860,6 +2038,10 @@ const translations = {
     'msg.htmlResponse': '端点返回的是网页而非 JSON。请检查 API 端点是否正确（例如缺少 /v1 路径，或填成了网站地址）',
     'msg.invalidJson': '端点返回了无效的 JSON 响应',
     'msg.responseTooLarge': '端点响应过大，已停止处理以保护浏览器',
+    'msg.quickActionNameRequired': '请输入快捷操作名称',
+    'msg.quickActionPromptRequired': '请输入快捷操作 Prompt',
+    'msg.quickActionLimit': '最多保存 10 个自定义快捷操作',
+    'msg.quickActionSaveFailed': '快捷操作保存失败',
     'help.baseUrlV1Hint': '提示：OpenAI 兼容端点通常以 /v1 结尾（如 https://api.openai.com/v1）。',
     'settings.customModels': '自定义模型',
     'help.customModels': '用逗号分隔多个模型 ID；填写后模型列表直接使用它们，不再从 API 获取（适用于不支持模型列表接口的 API）',
@@ -1934,6 +2116,20 @@ class SidePanelController {
   private closeProfileEditorBtn!: HTMLButtonElement;
   private profileEditorTitle!: HTMLElement;
   private profileList!: HTMLElement;
+  private quickActionsContainer!: HTMLElement;
+  private quickActionList!: HTMLElement;
+  private builtinQuickActionList!: HTMLElement;
+  private addQuickActionBtn!: HTMLButtonElement;
+  private quickActionEditor!: HTMLElement;
+  private closeQuickActionEditorBtn!: HTMLButtonElement;
+  private saveQuickActionBtn!: HTMLButtonElement;
+  private quickActionEditorTitle!: HTMLElement;
+  private quickActionNameInput!: HTMLInputElement;
+  private quickActionPromptInput!: HTMLTextAreaElement;
+  private editingQuickActionId: string | null = null;
+  private quickActionItems: QuickActionItem[] = [];
+  private quickActionEditorReturnFocus: HTMLElement | null = null;
+  private quickActionEditorReturnKey: string | null = null;
   private editingProfileId: string | null = null;
 
   private getActiveProfile(settings: AppSettings): ApiProfile | null {
@@ -2356,6 +2552,16 @@ class SidePanelController {
     this.closeProfileEditorBtn = document.getElementById('close-profile-editor') as HTMLButtonElement;
     this.profileEditorTitle = document.getElementById('profile-editor-title')!;
     this.profileList = document.getElementById('api-profile-list')!;
+    this.quickActionsContainer = document.getElementById('quick-actions')!;
+    this.quickActionList = document.getElementById('quick-action-list')!;
+    this.builtinQuickActionList = document.getElementById('builtin-quick-action-list')!;
+    this.addQuickActionBtn = document.getElementById('add-quick-action') as HTMLButtonElement;
+    this.quickActionEditor = document.getElementById('quick-action-editor')!;
+    this.closeQuickActionEditorBtn = document.getElementById('close-quick-action-editor') as HTMLButtonElement;
+    this.saveQuickActionBtn = document.getElementById('save-quick-action') as HTMLButtonElement;
+    this.quickActionEditorTitle = document.getElementById('quick-action-editor-title')!;
+    this.quickActionNameInput = document.getElementById('quick-action-name') as HTMLInputElement;
+    this.quickActionPromptInput = document.getElementById('quick-action-prompt') as HTMLTextAreaElement;
     this.headerModelSelect = document.getElementById('model-select') as HTMLSelectElement;
     this.previewBar = document.getElementById('preview-bar')!;
     this.previewIcon = document.getElementById('preview-icon')!;
@@ -2461,6 +2667,20 @@ class SidePanelController {
     this.closeSettingsBtn.addEventListener('click', () => this.closeSettings());
     this.closeProfileEditorBtn.addEventListener('click', () => this.closeProfileEditor());
     this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
+    this.closeQuickActionEditorBtn.addEventListener('click', () => this.closeQuickActionEditor());
+    document.getElementById('cancel-quick-action')?.addEventListener('click', () => this.closeQuickActionEditor());
+    this.saveQuickActionBtn.addEventListener('click', () => void this.saveQuickAction());
+    this.addQuickActionBtn.addEventListener('click', () => this.openQuickActionEditor(null));
+    this.quickActionEditor.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      const target = event.target;
+      const saveFromName = target === this.quickActionNameInput && !event.shiftKey;
+      const saveFromPrompt = target === this.quickActionPromptInput &&
+        (event.ctrlKey || event.metaKey) && !event.shiftKey;
+      if (!saveFromName && !saveFromPrompt) return;
+      event.preventDefault();
+      void this.saveQuickAction();
+    });
     const formatSelect = document.getElementById('api-format') as HTMLSelectElement;
     formatSelect.addEventListener('change', () => {
       const format = formatSelect.value as ApiFormat;
@@ -2483,6 +2703,25 @@ class SidePanelController {
 
     // Live-check the endpoint field and show the /v1 advisory hint if needed
     document.getElementById('base-url')?.addEventListener('input', () => this.updateBaseUrlHint());
+
+    this.builtinQuickActionList.addEventListener('change', event => {
+      const input = (event.target as HTMLElement).closest<HTMLInputElement>('[data-builtin-id]');
+      if (input?.dataset.builtinId) void this.toggleBuiltinQuickAction(input.dataset.builtinId as BuiltInQuickActionId, input.checked);
+    });
+
+    this.quickActionList.addEventListener('click', event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-quick-action-operation]');
+      const key = button?.dataset.quickActionKey;
+      const operation = button?.dataset.quickActionOperation;
+      if (!button || !key || !operation) return;
+      if (operation === 'edit' && key.startsWith('custom:')) {
+        this.openQuickActionEditor(key.slice('custom:'.length));
+      } else if (operation === 'delete') {
+        void this.deleteQuickAction(key);
+      } else if (operation === 'up' || operation === 'down') {
+        void this.moveQuickAction(key, operation === 'up' ? -1 : 1);
+      }
+    });
   }
 
   /** Register conversation navigation controls. */
@@ -2579,15 +2818,149 @@ class SidePanelController {
     if (files.length > 0) void this.addAttachmentFiles(files);
   }
 
-  /** Register the predefined summarize/explain/translate actions. */
+  /** Register the dynamically rendered quick actions. */
   private setupQuickActionEvents(): void {
-    const quickActions = document.querySelectorAll('.quick-action');
-    quickActions.forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const action = (e.currentTarget as HTMLElement).dataset.action;
-        this.handleQuickAction(action);
-      });
+    this.quickActionsContainer.addEventListener('click', event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-quick-action-key]');
+      if (!button?.dataset.quickActionKey) return;
+      void this.handleQuickAction(button.dataset.quickActionKey);
     });
+  }
+
+  private quickActionKey(item: QuickActionItem): string {
+    return item.kind === 'builtin' ? `builtin:${item.id}` : `custom:${item.id}`;
+  }
+
+  private getBuiltinQuickActionDefinition(id: BuiltInQuickActionId): BuiltInQuickActionDefinition {
+    return BUILTIN_QUICK_ACTIONS.find(action => action.id === id) || BUILTIN_QUICK_ACTIONS[0];
+  }
+
+  /** Render the composer shortcuts without translating custom content. */
+  private renderQuickActions(settings: Pick<AppSettings, 'quickActions'>): void {
+    if (!this.quickActionsContainer) return;
+    this.quickActionItems = getEffectiveQuickActions(settings.quickActions);
+    this.quickActionsContainer.setAttribute('aria-label', I18nService.t('settings.quickActions'));
+
+    for (const item of this.quickActionItems) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'quick-action';
+      button.dataset.quickActionKey = this.quickActionKey(item);
+
+      const icon = document.createElement('span');
+      icon.className = 'quick-action-icon';
+      icon.textContent = item.kind === 'builtin'
+        ? this.getBuiltinQuickActionDefinition(item.id).icon
+        : '✦';
+
+      const label = document.createElement('span');
+      label.className = 'quick-action-label';
+      label.textContent = item.kind === 'builtin'
+        ? I18nService.t(this.getBuiltinQuickActionDefinition(item.id).labelKey)
+        : item.label;
+
+      button.append(icon, label);
+      this.quickActionsContainer.appendChild(button);
+    }
+  }
+
+  /** Render shortcut management controls inside the settings panel. */
+  private renderQuickActionSettings(settings: Pick<AppSettings, 'quickActions'>): void {
+    if (!this.quickActionList || !this.builtinQuickActionList) return;
+    const actions = getEffectiveQuickActions(settings.quickActions);
+    this.quickActionItems = actions;
+    const customCount = actions.filter(item => item.kind === 'custom').length;
+    const selectedBuiltinCount = actions.filter(item => item.kind === 'builtin').length;
+    const requiredBuiltinCount = Math.max(0, BUILTIN_QUICK_ACTIONS.length - customCount);
+
+    this.quickActionList.replaceChildren();
+    this.builtinQuickActionList.replaceChildren();
+    this.quickActionsContainer.replaceChildren();
+    this.quickActionsContainer.setAttribute('aria-label', I18nService.t('settings.quickActions'));
+
+    for (const item of actions) {
+      const key = this.quickActionKey(item);
+      const row = document.createElement('div');
+      row.className = 'quick-action-setting-item';
+      row.dataset.quickActionKey = key;
+      row.setAttribute('role', 'listitem');
+
+      const icon = document.createElement('span');
+      icon.className = 'quick-action-setting-icon';
+      icon.textContent = item.kind === 'builtin'
+        ? this.getBuiltinQuickActionDefinition(item.id).icon
+        : '✦';
+
+      const content = document.createElement('div');
+      content.className = 'quick-action-setting-content';
+      const label = document.createElement('span');
+      label.className = 'quick-action-setting-label';
+      label.textContent = item.kind === 'builtin'
+        ? I18nService.t(this.getBuiltinQuickActionDefinition(item.id).labelKey)
+        : item.label;
+      const caption = document.createElement('span');
+      caption.className = 'quick-action-setting-caption';
+      caption.textContent = item.kind === 'builtin'
+        ? I18nService.t('settings.builtInQuickAction')
+        : item.prompt;
+      content.append(label, caption);
+
+      const controls = document.createElement('div');
+      controls.className = 'quick-action-setting-controls';
+      controls.append(
+        this.buildQuickActionOperationButton('up', key, I18nService.t('settings.moveUp'), actions.indexOf(item) === 0),
+        this.buildQuickActionOperationButton('down', key, I18nService.t('settings.moveDown'), actions.indexOf(item) === actions.length - 1)
+      );
+      if (item.kind === 'custom') {
+        controls.append(
+          this.buildQuickActionOperationButton('edit', key, I18nService.t('settings.editQuickAction')),
+          this.buildQuickActionOperationButton('delete', key, I18nService.t('settings.deleteQuickAction'), false, true)
+        );
+      }
+
+      row.append(icon, content, controls);
+      this.quickActionList.appendChild(row);
+    }
+
+    for (const builtin of BUILTIN_QUICK_ACTIONS) {
+      const label = document.createElement('label');
+      label.className = 'quick-action-builtin-option';
+      label.setAttribute('role', 'listitem');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.builtinId = builtin.id;
+      input.checked = actions.some(item => item.kind === 'builtin' && item.id === builtin.id);
+      input.disabled = customCount === 0 || customCount >= BUILTIN_QUICK_ACTIONS.length ||
+        (!input.checked && selectedBuiltinCount >= requiredBuiltinCount);
+      const text = document.createElement('span');
+      text.textContent = I18nService.t(builtin.labelKey);
+      label.append(input, text);
+      this.builtinQuickActionList.appendChild(label);
+    }
+
+    const count = document.getElementById('quick-action-count');
+    if (count) count.textContent = I18nService.t('settings.quickActionCount').replace('{count}', String(customCount));
+    this.addQuickActionBtn.disabled = customCount >= LIMITS.MAX_CUSTOM_QUICK_ACTIONS;
+    this.renderQuickActions({ quickActions: actions });
+  }
+
+  private buildQuickActionOperationButton(
+    operation: 'up' | 'down' | 'edit' | 'delete',
+    key: string,
+    label: string,
+    disabled = false,
+    danger = false
+  ): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `quick-action-operation${danger ? ' danger' : ''}`;
+    button.dataset.quickActionOperation = operation;
+    button.dataset.quickActionKey = key;
+    button.disabled = disabled;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    button.textContent = operation === 'up' ? '↑' : operation === 'down' ? '↓' : operation === 'edit' ? '✎' : '×';
+    return button;
   }
 
   /** Register language and theme toggles. */
@@ -2616,15 +2989,23 @@ class SidePanelController {
         this.closeProfileEditor();
       }
     });
+    this.quickActionEditor.addEventListener('click', (e) => {
+      if (e.target === this.quickActionEditor) {
+        this.closeQuickActionEditor();
+      }
+    });
     document.addEventListener('keydown', (event) => {
-      const activeModal = !this.profileEditor.classList.contains('hidden')
-        ? this.profileEditor
-        : !this.settingsModal.classList.contains('hidden')
-          ? this.settingsModal
-          : null;
+      const activeModal = !this.quickActionEditor.classList.contains('hidden')
+        ? this.quickActionEditor
+        : !this.profileEditor.classList.contains('hidden')
+          ? this.profileEditor
+          : !this.settingsModal.classList.contains('hidden')
+            ? this.settingsModal
+            : null;
       if (!activeModal) return;
       if (event.key === 'Escape') {
-        if (activeModal === this.profileEditor) this.closeProfileEditor();
+        if (activeModal === this.quickActionEditor) this.closeQuickActionEditor();
+        else if (activeModal === this.profileEditor) this.closeProfileEditor();
         else this.closeSettings();
         return;
       }
@@ -2760,17 +3141,15 @@ class SidePanelController {
   /**
    * Handle quick action button click
    */
-  private async handleQuickAction(action: string | undefined): Promise<void> {
+  private async handleQuickAction(actionKey: string | undefined): Promise<void> {
+    if (!actionKey) return;
+
+    const action = this.quickActionItems.find(item => this.quickActionKey(item) === actionKey);
     if (!action) return;
 
-    const prompts: Record<string, string> = {
-      summarize: '请总结当前页面的主要内容',
-      explain: '请解释当前页面中的核心概念',
-      translate: '请将当前页面的内容翻译为中文'
-    };
-
-    const prompt = prompts[action];
-    if (!prompt) return;
+    const prompt = action.kind === 'builtin'
+      ? I18nService.t(this.getBuiltinQuickActionDefinition(action.id).promptKey)
+      : action.prompt;
 
     // Set the prompt in the input and send
     this.messageInput.value = prompt;
@@ -2784,6 +3163,7 @@ class SidePanelController {
   private async loadSettings(): Promise<void> {
     const settings = await StorageService.getSettings();
     this.populateProfileSelects(settings);
+    this.quickActionItems = getEffectiveQuickActions(settings.quickActions);
     const profile = this.getActiveProfile(settings);
 
     // Initialize API service
@@ -3625,7 +4005,10 @@ Instructions:
 
   /** Open settings modal (list only; adding/editing opens the editor layer). */
   private openSettings(): void {
-    void StorageService.getSettings().then(settings => this.populateProfileSelects(settings));
+    void StorageService.getSettings().then(settings => {
+      this.populateProfileSelects(settings);
+      this.renderQuickActionSettings(settings);
+    });
     this.settingsModal.classList.remove('hidden');
     this.closeSettingsBtn.focus();
   }
@@ -3653,6 +4036,120 @@ Instructions:
     this.closeSettingsBtn.focus();
   }
 
+  private openQuickActionEditor(actionId: string | null): void {
+    this.editingQuickActionId = actionId;
+    const activeElement = document.activeElement;
+    this.quickActionEditorReturnFocus = activeElement instanceof HTMLElement && activeElement !== document.body
+      ? activeElement
+      : this.addQuickActionBtn;
+    this.quickActionEditorReturnKey = actionId ? `custom:${actionId}` : null;
+    const action = actionId
+      ? this.quickActionItems.find(item => item.kind === 'custom' && item.id === actionId)
+      : undefined;
+    this.quickActionEditorTitle.textContent = action
+      ? I18nService.t('settings.editQuickAction')
+      : I18nService.t('settings.addQuickAction');
+    this.quickActionNameInput.value = action?.kind === 'custom' ? action.label : '';
+    this.quickActionPromptInput.value = action?.kind === 'custom' ? action.prompt : '';
+    this.quickActionEditor.classList.remove('hidden');
+    this.quickActionNameInput.focus();
+  }
+
+  private closeQuickActionEditor(): void {
+    this.quickActionEditor.classList.add('hidden');
+    this.editingQuickActionId = null;
+    const replacement = this.quickActionEditorReturnKey
+      ? Array.from(this.quickActionList.querySelectorAll<HTMLButtonElement>(
+        '[data-quick-action-operation="edit"]'
+      )).find(button => button.dataset.quickActionKey === this.quickActionEditorReturnKey)
+      : null;
+    const focusTarget = this.quickActionEditorReturnFocus?.isConnected
+      ? this.quickActionEditorReturnFocus
+      : replacement || this.addQuickActionBtn;
+    this.quickActionEditorReturnFocus = null;
+    this.quickActionEditorReturnKey = null;
+    focusTarget.focus();
+  }
+
+  private async saveQuickAction(): Promise<void> {
+    const label = this.quickActionNameInput.value.trim().slice(0, LIMITS.MAX_QUICK_ACTION_LABEL_LENGTH);
+    const prompt = this.quickActionPromptInput.value.trim().slice(0, LIMITS.MAX_QUICK_ACTION_PROMPT_LENGTH);
+    if (!label) {
+      this.showError(I18nService.t('msg.quickActionNameRequired'));
+      this.quickActionNameInput.focus();
+      return;
+    }
+    if (!prompt) {
+      this.showError(I18nService.t('msg.quickActionPromptRequired'));
+      this.quickActionPromptInput.focus();
+      return;
+    }
+
+    const actions = [...this.quickActionItems];
+    if (this.editingQuickActionId) {
+      const index = actions.findIndex(item => item.kind === 'custom' && item.id === this.editingQuickActionId);
+      if (index < 0) return;
+      actions[index] = { kind: 'custom', id: this.editingQuickActionId, label, prompt };
+    } else {
+      const customCount = actions.filter(item => item.kind === 'custom').length;
+      if (customCount >= LIMITS.MAX_CUSTOM_QUICK_ACTIONS) {
+        this.showError(I18nService.t('msg.quickActionLimit'));
+        return;
+      }
+      actions.push({ kind: 'custom', id: newQuickActionId(), label, prompt });
+    }
+
+    if (await this.persistQuickActions(actions)) {
+      this.closeQuickActionEditor();
+    }
+  }
+
+  private async persistQuickActions(actions: QuickActionItem[]): Promise<boolean> {
+    try {
+      const settings = await StorageService.getSettings();
+      settings.quickActions = actions;
+      await StorageService.saveSettings(settings);
+      this.renderQuickActionSettings(settings);
+      return true;
+    } catch (error) {
+      console.error('Failed to save quick actions:', error);
+      this.showError(I18nService.t('msg.quickActionSaveFailed'));
+      return false;
+    }
+  }
+
+  private async toggleBuiltinQuickAction(id: BuiltInQuickActionId, checked: boolean): Promise<void> {
+    const customCount = this.quickActionItems.filter(item => item.kind === 'custom').length;
+    if (customCount === 0 || customCount >= BUILTIN_QUICK_ACTIONS.length) return;
+
+    const actions = [...this.quickActionItems];
+    const existingIndex = actions.findIndex(item => item.kind === 'builtin' && item.id === id);
+    if (checked && existingIndex < 0) {
+      const selectedCount = actions.filter(item => item.kind === 'builtin').length;
+      if (selectedCount >= BUILTIN_QUICK_ACTIONS.length - customCount) return;
+      actions.push({ kind: 'builtin', id });
+    } else if (!checked && existingIndex >= 0) {
+      actions.splice(existingIndex, 1);
+    }
+    await this.persistQuickActions(actions);
+  }
+
+  private async deleteQuickAction(key: string): Promise<void> {
+    if (!key.startsWith('custom:')) return;
+    const id = key.slice('custom:'.length);
+    const actions = this.quickActionItems.filter(item => !(item.kind === 'custom' && item.id === id));
+    await this.persistQuickActions(actions);
+  }
+
+  private async moveQuickAction(key: string, delta: -1 | 1): Promise<void> {
+    const actions = [...this.quickActionItems];
+    const index = actions.findIndex(item => this.quickActionKey(item) === key);
+    const target = index + delta;
+    if (index < 0 || target < 0 || target >= actions.length) return;
+    [actions[index], actions[target]] = [actions[target], actions[index]];
+    await this.persistQuickActions(actions);
+  }
+
   private async deleteProfile(profileId: string): Promise<void> {
     const settings = await StorageService.getSettings();
     settings.profiles = settings.profiles.filter(profile => profile.id !== profileId);
@@ -3665,8 +4162,12 @@ Instructions:
 
   /** Close settings modal. */
   private closeSettings(): void {
+    this.quickActionEditor.classList.add('hidden');
     this.profileEditor.classList.add('hidden');
     this.settingsModal.classList.add('hidden');
+    this.editingQuickActionId = null;
+    this.quickActionEditorReturnFocus = null;
+    this.quickActionEditorReturnKey = null;
     this.settingsBtn.focus();
   }
 
@@ -3867,16 +4368,25 @@ Instructions:
       'label-remember-key': 'label.rememberKey',
       'warning-title': 'label.warningTitle',
       'warning-text': 'label.warningText',
-      'quick-summarize': 'label.summarize',
-      'quick-explain': 'label.explain',
-      'quick-translate': 'label.translate'
+      'label-quick-actions': 'settings.quickActions',
+      'help-quick-actions': 'help.quickActions',
+      'add-quick-action-text': 'settings.addQuickAction',
+      'label-builtin-quick-actions': 'settings.builtInQuickActions',
+      'label-quick-action-order': 'settings.quickActionOrder',
+      'label-quick-action-name': 'settings.quickActionName',
+      'label-quick-action-prompt': 'settings.quickActionPrompt',
+      'help-quick-action-prompt': 'help.quickActionPrompt',
+      'quick-action-name': 'settings.quickActionNamePlaceholder',
+      'quick-action-prompt': 'settings.quickActionPromptPlaceholder',
+      'save-quick-action-text': 'settings.saveQuickAction',
+      'cancel-quick-action-text': 'settings.cancelQuickAction'
     };
 
     Object.entries(elements).forEach(([elementId, translationKey]) => {
       const element = document.getElementById(elementId);
       if (element) {
-        if (elementId === 'message-input') {
-          (element as HTMLTextAreaElement).placeholder = I18nService.t(translationKey);
+        if (elementId === 'message-input' || elementId === 'quick-action-name' || elementId === 'quick-action-prompt') {
+          (element as HTMLInputElement | HTMLTextAreaElement).placeholder = I18nService.t(translationKey);
         } else {
           element.textContent = I18nService.t(translationKey);
         }
@@ -3904,6 +4414,14 @@ Instructions:
 
     if (this.messages.length === 0 && this.chatMessages) {
       this.renderMessages();
+    }
+    if (this.quickActionsContainer) {
+      this.renderQuickActionSettings({ quickActions: this.quickActionItems });
+    }
+    if (this.quickActionEditor && !this.quickActionEditor.classList.contains('hidden')) {
+      this.quickActionEditorTitle.textContent = this.editingQuickActionId
+        ? I18nService.t('settings.editQuickAction')
+        : I18nService.t('settings.addQuickAction');
     }
   }
 

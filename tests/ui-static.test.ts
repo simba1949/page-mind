@@ -9,6 +9,8 @@ import { join } from 'node:path';
 const root = join(__dirname, '..');
 const css = readFileSync(join(root, 'src', 'sidepanel', 'styles.css'), 'utf8');
 const manifest = JSON.parse(readFileSync(join(root, 'manifest.json'), 'utf8'));
+const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const constantsTs = readFileSync(join(root, 'src', 'utils', 'constants.ts'), 'utf8');
 const html = readFileSync(join(root, 'src', 'sidepanel', 'index.html'), 'utf8');
 const sidepanelTs = readFileSync(join(root, 'src', 'sidepanel', 'sidepanel.ts'), 'utf8');
 
@@ -69,8 +71,9 @@ describe('sidepanel.ts: explicit light/dark theme contract', () => {
 });
 
 describe('manifest.json: least-privilege permission surface', () => {
-  test('uses the 0.1.2 storage/module contract', () => {
-    expect(manifest.version).toBe('0.1.2');
+  test('uses the 0.1.3 storage/module contract', () => {
+    expect(manifest.version).toBe('0.1.3');
+    expect(packageJson.version).toBe('0.1.3');
   });
 
   test('requests exactly the expected permissions', () => {
@@ -213,6 +216,53 @@ describe('index.html: composer and settings markup hygiene', () => {
   test('offers API provider and endpoint settings', () => {
     expect(html).toContain('id="api-format"');
     expect(html).toContain('id="base-url"');
+  });
+
+  test('renders quick actions dynamically and exposes their settings manager', () => {
+    expect(html).toContain('id="quick-actions"');
+    expect(html).toContain('id="quick-actions" class="quick-actions" role="toolbar"');
+    expect(html).not.toContain('data-action="summarize"');
+    expect(html).not.toContain('data-action="explain"');
+    expect(html).not.toContain('data-action="translate"');
+    expect(html).toContain('id="builtin-quick-action-list"');
+    expect(html).toContain('id="quick-action-list"');
+    expect(html).toContain('id="builtin-quick-action-list" class="quick-action-builtin-list" role="list"');
+    expect(html).toContain('id="quick-action-editor"');
+    expect(html).toContain('id="quick-action-prompt"');
+  });
+
+  test('keeps custom shortcut rendering text-only', () => {
+    expect(sidepanelTs).toContain('label.textContent = item.kind === \'builtin\'');
+    expect(sidepanelTs).toContain('caption.textContent = item.kind === \'builtin\'');
+    expect(sidepanelTs).toContain('const prompt = action.kind === \'builtin\'');
+    const rendererStart = sidepanelTs.indexOf('private renderQuickActions');
+    const rendererEnd = sidepanelTs.indexOf('private renderQuickActionSettings', rendererStart);
+    expect(sidepanelTs.slice(rendererStart, rendererEnd)).not.toContain('innerHTML');
+  });
+
+  test('separates the settings protocol from the project schema and keeps permissions unchanged', () => {
+    expect(constantsTs).toContain("export const STORAGE_SCHEMA_VERSION = '1.0';");
+    expect(constantsTs).toContain("export const PROJECT_VERSION = '0.1.3';");
+    expect(constantsTs).toContain("export const SETTINGS_PROTOCOL_VERSION = '1.0';");
+    expect(constantsTs).toContain("SETTINGS_PROTOCOL_VERSION: 'settings_protocol_version'");
+    expect([...manifest.permissions].sort()).toEqual([
+      'activeTab', 'contextMenus', 'scripting', 'sidePanel',
+      'storage', 'webNavigation'
+    ].sort());
+  });
+
+  test('provides visible keyboard focus and compact settings controls', () => {
+    expect(css).toContain('.quick-action-operation:focus-visible');
+    expect(css).toContain('.quick-action-editor-modal');
+    expect(css).toContain('.quick-action-setting-item');
+    expect(css).toContain('.quick-action-setting-label');
+  });
+
+  test('treats the quick action editor as the active modal and restores focus', () => {
+    expect(sidepanelTs).toContain('!this.quickActionEditor.classList.contains(\'hidden\')');
+    expect(sidepanelTs).toContain('activeModal === this.quickActionEditor');
+    expect(sidepanelTs).toContain('this.quickActionEditorReturnFocus?.isConnected');
+    expect(sidepanelTs).toContain('target === this.quickActionNameInput');
   });
 
   test('autofocuses the composer when the side panel opens', () => {

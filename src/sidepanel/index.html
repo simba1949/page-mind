@@ -61,20 +61,7 @@
       <!-- Input Area -->
       <div class="input-container">
         <!-- Quick Actions -->
-        <div class="quick-actions">
-          <button type="button" class="quick-action" data-action="summarize">
-            <span class="quick-action-icon">▤</span>
-            <span class="quick-action-label" id="quick-summarize">总结</span>
-          </button>
-          <button type="button" class="quick-action" data-action="explain">
-            <span class="quick-action-icon">◎</span>
-            <span class="quick-action-label" id="quick-explain">解释</span>
-          </button>
-          <button type="button" class="quick-action" data-action="translate">
-            <span class="quick-action-icon">文</span>
-            <span class="quick-action-label" id="quick-translate">翻译</span>
-          </button>
-        </div>
+        <div id="quick-actions" class="quick-actions" role="toolbar" aria-label="快捷操作"></div>
 
         <!-- Quote Bar (pending quoted AI reply for the next question) -->
         <div id="quote-bar" class="preview-bar quote hidden" aria-live="polite">
@@ -180,6 +167,33 @@
             </div>
           </div>
 
+          <div class="setting-group quick-action-manager">
+            <div class="quick-action-manager-header">
+              <div class="quick-action-manager-heading">
+                <label id="label-quick-actions">快捷操作</label>
+                <small id="help-quick-actions" class="profile-limit-hint">选择内置操作，也可以创建自己的 Prompt</small>
+              </div>
+              <button id="add-quick-action" type="button" class="add-profile-btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                <span id="add-quick-action-text">新增操作</span>
+              </button>
+            </div>
+            <div class="quick-action-setting-section">
+              <label id="label-builtin-quick-actions">内置操作</label>
+              <div id="builtin-quick-action-list" class="quick-action-builtin-list" role="list" aria-labelledby="label-builtin-quick-actions"></div>
+            </div>
+            <div class="quick-action-setting-section">
+              <div class="quick-action-setting-section-header">
+                <label id="label-quick-action-order">当前显示顺序</label>
+                <small id="quick-action-count" class="profile-limit-hint">自定义操作 0/10</small>
+              </div>
+              <div id="quick-action-list" class="quick-action-setting-list" role="list"></div>
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
@@ -260,6 +274,43 @@
           <div class="setting-actions">
             <button id="save-settings" class="primary-btn">
               <span id="save-text">保存设置</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Action Editor Modal -->
+    <div id="quick-action-editor" class="settings-panel quick-action-editor-modal hidden" role="dialog" aria-modal="true" aria-labelledby="quick-action-editor-title">
+      <div class="settings-content">
+        <div class="settings-header">
+          <h2 id="quick-action-editor-title">新增操作</h2>
+          <button id="close-quick-action-editor" class="close-btn" aria-label="关闭编辑">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="settings-body">
+          <div class="setting-group">
+            <label id="label-quick-action-name" for="quick-action-name">名称</label>
+            <input type="text" id="quick-action-name" maxlength="80" placeholder="例如：提取行动项" autocomplete="off">
+          </div>
+
+          <div class="setting-group">
+            <label id="label-quick-action-prompt" for="quick-action-prompt">Prompt</label>
+            <textarea id="quick-action-prompt" maxlength="4000" rows="7" placeholder="例如：请提取当前页面中的行动项，并按优先级列出。"></textarea>
+            <small id="help-quick-action-prompt" class="help-text">点击快捷操作后，这段 Prompt 会作为纯文本发送。</small>
+          </div>
+
+          <div class="setting-actions quick-action-editor-actions">
+            <button id="cancel-quick-action" type="button" class="secondary-btn">
+              <span id="cancel-quick-action-text">取消</span>
+            </button>
+            <button id="save-quick-action" type="button" class="primary-btn">
+              <span id="save-quick-action-text">保存操作</span>
             </button>
           </div>
         </div>
