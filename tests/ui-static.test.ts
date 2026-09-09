@@ -121,15 +121,30 @@ describe('sidepanel.ts: startup context capture', () => {
   test('skips context and authorization on non-web tabs', () => {
     const fetchStart = ts.indexOf('private async autoFetchCurrentPage');
     const selectionProbe = ts.indexOf("type: 'GET_SELECTION'", fetchStart);
-    const webPageGuard = ts.indexOf('if (!isWebPageUrl(activeTabUrl))', fetchStart);
+    const webPageGuard = ts.indexOf('if (activeTabUrl && !isWebPageUrl(activeTabUrl))', fetchStart);
     expect(webPageGuard).toBeGreaterThan(fetchStart);
     expect(webPageGuard).toBeLessThan(selectionProbe);
 
     const sendFetchStart = ts.indexOf('private async fetchCurrentPageContext');
     const permissionRequest = ts.indexOf('ensurePageAccessPermission(true)', sendFetchStart);
-    const sendWebPageGuard = ts.indexOf('if (!isWebPageUrl(activeTabUrl))', sendFetchStart);
+    const sendWebPageGuard = ts.indexOf('if (activeTabUrl && !isWebPageUrl(activeTabUrl))', sendFetchStart);
     expect(sendWebPageGuard).toBeGreaterThan(sendFetchStart);
     expect(sendWebPageGuard).toBeLessThan(permissionRequest);
+  });
+
+  test('does not reject a page solely because Chrome hides its tab URL', () => {
+    const fetchStart = ts.indexOf('private async autoFetchCurrentPage');
+    const urlRead = ts.indexOf('const activeTabUrl = await currentActiveTabUrl();', fetchStart);
+    const capture = ts.indexOf("type: 'GET_PAGE_CONTENT'", fetchStart);
+    expect(urlRead).toBeGreaterThan(fetchStart);
+    expect(capture).toBeGreaterThan(urlRead);
+    expect(ts.slice(urlRead, capture)).toContain('activeTabUrl && !isWebPageUrl(activeTabUrl)');
+
+    const sendFetchStart = ts.indexOf('private async fetchCurrentPageContext');
+    const sendCapture = ts.indexOf("type: 'GET_SELECTION'", sendFetchStart);
+    const sendPermission = ts.indexOf('ensurePageAccessPermission(true)', sendFetchStart);
+    expect(sendPermission).toBeGreaterThan(sendFetchStart);
+    expect(sendCapture).toBeGreaterThan(sendPermission);
   });
 
   test('does not render a tab preview when the tab URL is not a web page', () => {

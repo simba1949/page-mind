@@ -2299,7 +2299,11 @@ class SidePanelController {
     try {
       if (this.quotedReply) return;
       const activeTabUrl = await currentActiveTabUrl();
-      if (!isWebPageUrl(activeTabUrl)) {
+      // `tabs.Tab.url` can be hidden until site access is granted. An empty
+      // URL is therefore not enough to conclude that the active tab is a
+      // browser-internal page: the background capture itself can still work
+      // through the activeTab grant. Keep the fast guard for URLs we can see.
+      if (activeTabUrl && !isWebPageUrl(activeTabUrl)) {
         // New-tab, browser-internal, and extension pages are not web pages:
         // never show a stale reference or offer site-access authorization.
         this.clearUnavailablePageContext();
@@ -2341,12 +2345,18 @@ class SidePanelController {
         }
       } else {
         // Nothing readable on an actual web page: site access may be missing.
-        // Only that case is fixable — offer authorization once.
-        const hasAccess = await ensurePageAccessPermission(false);
-        if (hasAccess) {
-          this.previewBar.classList.add('hidden');
+        // Only a known web URL can safely be used to request a narrow origin.
+        // If Chrome hides the URL, do not request broad access or mislabel the
+        // tab; the activeTab invocation may still succeed on the next retry.
+        if (isWebPageUrl(activeTabUrl)) {
+          const hasAccess = await ensurePageAccessPermission(false);
+          if (hasAccess) {
+            this.previewBar.classList.add('hidden');
+          } else {
+            this.showPermissionBar();
+          }
         } else {
-          this.showPermissionBar();
+          this.clearUnavailablePageContext();
         }
       }
     } catch (error) {
@@ -3339,16 +3349,19 @@ class SidePanelController {
   private async fetchCurrentPageContext(): Promise<void> {
     try {
       const activeTabUrl = await currentActiveTabUrl();
-      if (!isWebPageUrl(activeTabUrl)) {
+      // Keep the non-web guard when Chrome exposes the URL. An empty URL can
+      // also mean that tabs access is hidden, while scripting may still be
+      // authorized for the active tab via activeTab.
+      if (activeTabUrl && !isWebPageUrl(activeTabUrl)) {
         this.clearUnavailablePageContext();
         return;
       }
 
-      // This runs as part of a user-initiated send, so it's safe to prompt
-      // for the page-access permission if it isn't already granted (e.g. the
-      // user switched tabs after opening the side panel, which invalidates
-      // the activeTab grant for the newly active tab).
-      if (!await ensurePageAccessPermission(true)) {
+      // A known web URL lets us request only that origin. When the URL is
+      // hidden, try the activeTab-backed capture first instead of rejecting a
+      // valid page before the background has a chance to read it.
+      if (isWebPageUrl(activeTabUrl) &&
+          !await ensurePageAccessPermission(true)) {
         this.showError(I18nService.t('msg.noPageAccess'));
         return;
       }
