@@ -33,6 +33,18 @@ describe('renderMarkdown', () => {
       expect(html).toContain('&lt;div&gt;text&lt;/div&gt;');
     });
 
+    test('trims blank lines and common indentation around commands', () => {
+      const html = renderMarkdown('```powershell\n\n  Get-Command codegraph  \n\n```');
+      expect(html).toContain('<code>Get-Command codegraph</code>');
+      expect(html).not.toContain('<code>\n');
+      expect(html).not.toContain('codegraph  </code>');
+    });
+
+    test('preserves relative indentation inside multi-line code', () => {
+      const html = renderMarkdown('```js\n\n  function run() {\n    return true;\n  }\n\n```');
+      expect(html).toContain('<code>function run() {\n  return true;\n}</code>');
+    });
+
     test('renders multiple blocks in document order', () => {
       const html = renderMarkdown('```a\n1\n```\n\nmiddle\n\n```b\n2\n```');
       const a = html.indexOf('md-lang">a');

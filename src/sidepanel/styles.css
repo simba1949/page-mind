@@ -518,25 +518,37 @@ body {
   font-size: 12.5px;
 }
 
-.markdown-body .md-pre {
+.markdown-body .md-pre-wrap {
   margin: 0 0 8px;
-  padding: 10px 12px;
+}
+
+.markdown-body > .md-pre-wrap:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body .md-pre {
+  margin: 0;
+  padding: 8px 10px;
   background: var(--bg-primary);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
+  line-height: 1.45;
   overflow-x: auto;
 }
 
 .markdown-body .md-pre code {
+  display: block;
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Courier New', monospace;
   font-size: 12.5px;
+  line-height: 1.45;
   white-space: pre;
 }
 
 .markdown-body .md-lang {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   font-size: 10px;
+  line-height: 1.2;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;

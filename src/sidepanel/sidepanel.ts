@@ -662,9 +662,29 @@ function mdFenceToHtml(lang: string, code: string): string {
   const label = lang.trim()
     ? `<span class="md-lang">${lang.trim()}</span>`
     : '';
+  const normalizedCode = mdNormalizeFenceCode(code);
   return `<div class="md-pre-wrap">` +
     `<button type="button" class="md-code-copy" title="${I18nService.t('btn.copyCode')}">${COPY_ICON_SVG}</button>` +
-    `<pre class="md-pre">${label}<code>${code.replace(/\n$/, '')}</code></pre></div>`;
+    `<pre class="md-pre">${label}<code>${normalizedCode}</code></pre></div>`;
+}
+
+/** Remove formatter noise around fenced code without changing its structure. */
+function mdNormalizeFenceCode(code: string): string {
+  const lines = code.replace(/\r\n?/g, '\n').split('\n');
+
+  while (lines.length > 0 && !lines[0].trim()) lines.shift();
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
+  if (lines.length === 0) return '';
+
+  const indents = lines
+    .filter(line => line.trim())
+    .map(line => line.match(/^[ \t]*/)?.[0].length ?? 0);
+  const commonIndent = Math.min(...indents);
+
+  return lines.map(line => {
+    if (!line.trim()) return '';
+    return line.slice(commonIndent).replace(/[ \t]+$/, '');
+  }).join('\n');
 }
 
 /**
