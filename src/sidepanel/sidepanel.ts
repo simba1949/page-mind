@@ -2290,9 +2290,9 @@ class SidePanelController {
    * Auto-fetch current page and show in preview bar.
    * On first open (`preferSelection`), a selection the user made before
    * clicking the extension icon becomes the reference instead of the full
-   * page — the page's selection is still readable from the panel. Later
-   * refreshes deliberately skip this: a lingering old selection must not
-   * resurrect a reference the user has since dismissed or replaced.
+   * page — the page's selection is still readable from the panel. Automatic
+   * refreshes deliberately skip a lingering old selection, while a
+   * user-initiated send checks the live selection before reusing page context.
    */
   private async autoFetchCurrentPage(preferSelection = false): Promise<void> {
     // Suppressed while a quote is pending — the quote is the reference
@@ -2312,18 +2312,7 @@ class SidePanelController {
       let context: PageContext | null = null;
 
       if (preferSelection) {
-        try {
-          const selectionResponse = await chrome.runtime.sendMessage({
-            type: 'GET_SELECTION'
-          });
-          const selection = sanitizePageContext(selectionResponse?.data);
-          if (selectionResponse?.success && selection?.content) {
-            context = selection;
-          }
-        } catch {
-          // Selection probe failed (non-injectable page, worker asleep) —
-          // the full-page fetch below still applies.
-        }
+        context = await this.getCurrentSelectionContext(activeTabUrl);
       }
 
       if (!context) {
@@ -3266,7 +3255,7 @@ class SidePanelController {
     // Determine the reference for this message. Exactly one applies:
     // a pending quote replaces the page/selection reference entirely, so
     // don't capture or attach page context alongside it.
-    if (!this.contextDismissed && !this.quotedReply) {
+    if (!this.quotedReply) {
       await this.refreshContextForActiveTab();
     }
 
@@ -3317,38 +3306,65 @@ class SidePanelController {
   /**
    * Ensure `currentContext` still describes the tab the user is looking at.
    * A stale context (captured on a page since left) is dropped, its preview
-   * bar hidden, and the current page re-fetched. Runs on every send — the
-   * probe is one cheap tabs.query, no scripting.
+   * bar hidden, and the current page re-fetched. Runs on every send and checks
+   * for a newly selected page range before reusing an existing page context.
    */
   private async refreshContextForActiveTab(): Promise<void> {
-    let keepContext = false;
-    if (this.currentContext) {
-      try {
-        const response = await chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB' });
-        const tabUrl: string = response?.data?.url || '';
-        // An empty URL means the active tab isn't a normal web page
-        // (chrome://, new tab page) — the old context cannot apply there.
-        keepContext = Boolean(tabUrl) &&
-          SidePanelController.urlForContextComparison(this.currentContext.url) ===
-          SidePanelController.urlForContextComparison(tabUrl);
-      } catch {
-        // Background unreachable — don't trust the old association either.
-        keepContext = false;
+    const activeTabUrl = await currentActiveTabUrl();
+    if (activeTabUrl && !isWebPageUrl(activeTabUrl)) {
+      this.clearUnavailablePageContext();
+      return;
+    }
+
+    const contextMatchesActiveTab = Boolean(this.currentContext && isWebPageUrl(activeTabUrl)) &&
+      SidePanelController.urlForContextComparison(this.currentContext?.url || '') ===
+      SidePanelController.urlForContextComparison(activeTabUrl);
+
+    // A user may select text after the page preview was already captured. Read
+    // the live selection before reusing an existing full-page context, and
+    // also allow selection to re-enable a previously dismissed page context.
+    if (this.contextDismissed || (this.currentContext &&
+        (!contextMatchesActiveTab || this.currentContext.type === 'full_page'))) {
+      const selection = await this.getCurrentSelectionContext(activeTabUrl);
+      if (selection) {
+        this.currentContext = selection;
+        this.contextDismissed = false;
+        this.showSelectionBar(selection.content);
+        return;
       }
     }
 
-    if (keepContext) return;
+    if (contextMatchesActiveTab || this.contextDismissed) return;
 
     this.currentContext = null;
-    await this.fetchCurrentPageContext();
+    await this.fetchCurrentPageContext(activeTabUrl);
+  }
+
+  /** Read the current page selection without translating or rewriting it. */
+  private async getCurrentSelectionContext(activeTabUrl: string): Promise<PageContext | null> {
+    if (activeTabUrl && !isWebPageUrl(activeTabUrl)) return null;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'GET_SELECTION' });
+      const selection = sanitizePageContext(response?.data);
+      if (!response?.success || !selection?.content) return null;
+      if (activeTabUrl &&
+          SidePanelController.urlForContextComparison(selection.url) !==
+            SidePanelController.urlForContextComparison(activeTabUrl)) {
+        return null;
+      }
+      return selection;
+    } catch {
+      // Non-injectable page or an unavailable worker means no selection.
+      return null;
+    }
   }
 
   /**
    * Fetch current page context, auto-detecting if user has selected text
    */
-  private async fetchCurrentPageContext(): Promise<void> {
+  private async fetchCurrentPageContext(activeTabUrlOverride?: string): Promise<void> {
     try {
-      const activeTabUrl = await currentActiveTabUrl();
+      const activeTabUrl = activeTabUrlOverride ?? await currentActiveTabUrl();
       // Keep the non-web guard when Chrome exposes the URL. An empty URL can
       // also mean that tabs access is hidden, while scripting may still be
       // authorized for the active tab via activeTab.
@@ -3367,12 +3383,8 @@ class SidePanelController {
       }
 
       // First check if user has selected text
-      const selectionResponse = await chrome.runtime.sendMessage({
-        type: 'GET_SELECTION'
-      });
-
-      const selectionContext = sanitizePageContext(selectionResponse.data);
-      if (selectionResponse.success && selectionContext?.content) {
+      const selectionContext = await this.getCurrentSelectionContext(activeTabUrl);
+      if (selectionContext) {
         // User has selected text, use selection
         this.currentContext = selectionContext;
         this.contextDismissed = false;

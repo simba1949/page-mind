@@ -230,59 +230,88 @@ class BackgroundService {
     let results;
     try {
       results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        // Extract main content from the page - WITHOUT modifying the DOM
-        const title = document.title;
-        const safeUrl = new URL(window.location.href);
-        safeUrl.search = '';
-        safeUrl.hash = '';
+        target: { tabId: tab.id, allFrames: true },
+        func: () => {
+          // The visible document may be hosted by an iframe (for example, a
+          // knowledge-base editor). Inspect only cloned DOM nodes and never
+          // mutate the page the user is viewing.
+          const title = document.title;
+          const safeUrl = new URL(window.location.href);
+          safeUrl.search = '';
+          safeUrl.hash = '';
 
-        // Try to get main content area (priority order for better content extraction)
-        const mainContent =
-          document.querySelector('article') ||
-          document.querySelector('main') ||
-          document.querySelector('[role="main"]') ||
-          document.querySelector('.post-content') ||
-          document.querySelector('.article-content') ||
-          document.querySelector('.entry-content') ||
-          document.querySelector('.content') ||
-          document.body;
+          const contentSelectors = [
+            '[contenteditable="true"]',
+            '.ProseMirror',
+            '.ql-editor',
+            '.tiptap',
+            '[role="textbox"]',
+            '#layout_body',
+            '[data-type="document"]',
+            '[data-type="doc"]',
+            'article',
+            'main',
+            '[role="main"]',
+            '.post-content',
+            '.article-content',
+            '.entry-content',
+            '.content'
+          ];
+          const candidates = Array.from(new Set(
+            contentSelectors.flatMap(selector => Array.from(document.querySelectorAll(selector)))
+          ));
 
-        // Clone the content to avoid modifying the original page
-        const clonedContent = mainContent.cloneNode(true) as HTMLElement;
+          const extractText = (element: Element): string => {
+            const clonedContent = element.cloneNode(true) as HTMLElement;
+            const elementsToRemove = clonedContent.querySelectorAll(
+              'script, style, link, meta, noscript, iframe, svg, ' +
+              'nav, footer, header, aside, ' +
+              '[hidden], [aria-hidden="true"], [inert], ' +
+              '[role="navigation"], [role="banner"], [role="complementary"], [role="search"], ' +
+              '.advertisement, .ads, .social-share, .comments, .sidebar, ' +
+              '.nav, .navigation, .menu, .footer, .header, .widget, ' +
+              '.outline, [class*="outline"], .toc, [class*="toc"], ' +
+              '.related-posts, .recommended, .popup, .modal, .overlay'
+            );
+            elementsToRemove.forEach(el => el.remove());
+            return clonedContent.textContent || '';
+          };
 
-        // Remove non-content elements from the clone (not the original page)
-        const elementsToRemove = clonedContent.querySelectorAll(
-          'script, style, link, meta, noscript, iframe, svg, ' +
-          'nav, footer, header, aside, ' +
-          '[role="navigation"], [role="banner"], [role="complementary"], [role="search"], ' +
-          '.advertisement, .ads, .social-share, .comments, .sidebar, ' +
-          '.nav, .navigation, .menu, .footer, .header, .widget, ' +
-          '.related-posts, .recommended, .popup, .modal, .overlay'
-        );
-        elementsToRemove.forEach(el => el.remove());
+          let bestContent = '';
+          let bestScore = 0;
+          for (const candidate of candidates) {
+            const candidateContent = extractText(candidate);
+            if (!candidateContent.trim()) continue;
+            const isEditor = candidate.matches(
+              '[contenteditable="true"], .ProseMirror, .ql-editor, .tiptap, [role="textbox"]'
+            );
+            const score = candidateContent.length + (isEditor ? 1_000 : 0);
+            if (score > bestScore) {
+              bestContent = candidateContent;
+              bestScore = score;
+            }
+          }
 
-        // Extract text content from the clone
-        let content = clonedContent.innerText || clonedContent.textContent || '';
+          // Keep a body fallback for ordinary pages with no semantic root.
+          let content = bestContent || extractText(document.body);
+          content = content
+            .replace(/\r\n?/g, '\n')
+            .replace(/[ \t\f\v]+/g, ' ')
+            .replace(/[ \t]*\n[ \t]*/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
 
-        // Clean up the content (denoise)
-        content = content
-          .replace(/\s+/g, ' ')           // Collapse whitespace
-          .replace(/\n\s*\n/g, '\n')      // Remove empty lines
-          .replace(/[^\S\n]+/g, ' ')      // Collapse non-newline whitespace
-          .trim();
+          const lines = content.split('\n').filter(line => line.trim().length >= 3);
+          content = lines.join('\n');
 
-        // Remove very short lines that are likely noise (less than 3 chars)
-        const lines = content.split('\n').filter(line => line.trim().length >= 3);
-        content = lines.join('\n');
-
-        return {
-          title: title.substring(0, 300),
-          url: safeUrl.toString(),
-          content: content.substring(0, 8000)
-        };
-      }
+          return {
+            title: title.substring(0, 300),
+            url: safeUrl.toString(),
+            content: content.substring(0, 8000),
+            isTopFrame: window.top === window,
+            score: bestScore || content.length
+          };
+        }
       });
     } catch {
       // Non-injectable page (chrome://, Chrome Web Store, PDF viewer…) —
@@ -290,11 +319,31 @@ class BackgroundService {
       return null;
     }
 
-    if (results && results[0] && results[0].result) {
-      const { title, url, content } = results[0].result;
+    type PageFrameResult = {
+      title: string;
+      url: string;
+      content: string;
+      score?: number;
+    };
+    const frameResults: unknown[] = (results || []).map(result => result.result as unknown);
+    const bestResult = frameResults
+      .filter((value): value is PageFrameResult => {
+        if (!value || typeof value !== 'object') return false;
+        const candidate = value as Partial<PageFrameResult>;
+        return typeof candidate.title === 'string' && typeof candidate.url === 'string' &&
+          typeof candidate.content === 'string' && candidate.content.trim().length > 0;
+      })
+      .sort((left, right) => (right.score || right.content.length) -
+        (left.score || left.content.length))[0];
+
+    if (bestResult) {
+      const { title, url, content } = bestResult;
       return {
         type: 'full_page',
-        url,
+        // A nested editor has its own document URL. Associate the captured
+        // context with the active tab so the side panel does not discard it
+        // as stale when the outer page and iframe use different paths.
+        url: tab.url || url,
         title,
         content
       };
@@ -317,22 +366,22 @@ class BackgroundService {
     let results;
     try {
       results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const selection = window.getSelection();
-        const selectedText = selection?.toString().trim() || '';
+        target: { tabId: tab.id, allFrames: true },
+        func: () => {
+          const selection = window.getSelection();
+          const selectedText = selection?.toString().trim() || '';
 
-        return {
-          title: document.title.substring(0, 300),
-          url: (() => {
-            const safeUrl = new URL(window.location.href);
-            safeUrl.search = '';
-            safeUrl.hash = '';
-            return safeUrl.toString();
-          })(),
-          content: selectedText.substring(0, 8000)
-        };
-      }
+          return {
+            title: document.title.substring(0, 300),
+            url: (() => {
+              const safeUrl = new URL(window.location.href);
+              safeUrl.search = '';
+              safeUrl.hash = '';
+              return safeUrl.toString();
+            })(),
+            content: selectedText.substring(0, 8000)
+          };
+        }
       });
     } catch {
       // Non-injectable page (chrome://, another extension's page, Web
@@ -340,16 +389,23 @@ class BackgroundService {
       return null;
     }
 
-    if (results && results[0] && results[0].result) {
-      const { title, url, content } = results[0].result;
+    const frameResults: unknown[] = (results || []).map(result => result.result as unknown);
+    const bestResult = frameResults
+      .filter((value): value is { title: string; url: string; content: string } => {
+        if (!value || typeof value !== 'object') return false;
+        const candidate = value as Partial<{ title: string; url: string; content: string }>;
+        return typeof candidate.title === 'string' && typeof candidate.url === 'string' &&
+          typeof candidate.content === 'string' && candidate.content.trim().length > 0;
+      })
+      .sort((left, right) => right.content.length - left.content.length)[0];
 
-      if (!content) {
-        return null;
-      }
-
+    if (bestResult) {
+      const { title, url, content } = bestResult;
       return {
         type: 'selection',
-        url,
+        // Selection was read from the active tab's frame tree; use the tab
+        // URL for context ownership when Chrome exposes it.
+        url: tab.url || url,
         title,
         content
       };

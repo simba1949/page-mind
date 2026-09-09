@@ -114,8 +114,12 @@ describe('sidepanel.ts: startup context capture', () => {
     const at = ts.indexOf('private async autoFetchCurrentPage');
     expect(at).toBeGreaterThan(-1);
     const body = ts.slice(at, ts.indexOf('\n  /**', at));
-    expect(body).toContain("type: 'GET_SELECTION'");
-    expect(body).toMatch(/try \{\s*\n\s*const selectionResponse[\s\S]*?\} catch \{/);
+    expect(body).toContain('context = await this.getCurrentSelectionContext(activeTabUrl);');
+
+    const selectionAt = ts.indexOf('private async getCurrentSelectionContext');
+    const selectionBody = ts.slice(selectionAt, ts.indexOf('\n  /**', selectionAt));
+    expect(selectionBody).toContain("type: 'GET_SELECTION'");
+    expect(selectionBody).toMatch(/try \{[\s\S]*?const response[\s\S]*?\} catch \{/);
   });
 
   test('skips context and authorization on non-web tabs', () => {
@@ -141,10 +145,13 @@ describe('sidepanel.ts: startup context capture', () => {
     expect(ts.slice(urlRead, capture)).toContain('activeTabUrl && !isWebPageUrl(activeTabUrl)');
 
     const sendFetchStart = ts.indexOf('private async fetchCurrentPageContext');
-    const sendCapture = ts.indexOf("type: 'GET_SELECTION'", sendFetchStart);
     const sendPermission = ts.indexOf('ensurePageAccessPermission(true)', sendFetchStart);
-    expect(sendPermission).toBeGreaterThan(sendFetchStart);
-    expect(sendCapture).toBeGreaterThan(sendPermission);
+    const sendWebPageGuard = ts.indexOf('if (activeTabUrl && !isWebPageUrl(activeTabUrl))', sendFetchStart);
+    expect(sendWebPageGuard).toBeGreaterThan(sendFetchStart);
+    expect(sendWebPageGuard).toBeLessThan(sendPermission);
+    expect(ts.slice(sendFetchStart)).toContain(
+      'const selectionContext = await this.getCurrentSelectionContext(activeTabUrl);'
+    );
   });
 
   test('does not render a tab preview when the tab URL is not a web page', () => {
@@ -167,6 +174,40 @@ describe('sidepanel.ts: startup context capture', () => {
     const menuAssignment = ts.indexOf('this.currentContext = context', menuStart);
     expect(menuGuard).toBeGreaterThan(menuStart);
     expect(menuGuard).toBeLessThan(menuAssignment);
+  });
+});
+
+describe('background extraction: nested document and selection handling', () => {
+  const backgroundSource = readFileSync(join(root, 'src', 'background', 'service-worker.ts'), 'utf8');
+
+  test('injects into every accessible frame and prefers editor/document roots', () => {
+    const pageStart = backgroundSource.indexOf('private async getPageContent');
+    const selectionStart = backgroundSource.indexOf('private async getSelectionContent');
+    const pageBody = backgroundSource.slice(pageStart, selectionStart);
+
+    expect(pageBody).toContain('allFrames: true');
+    expect(pageBody).toContain('[contenteditable="true"]');
+    expect(pageBody).toContain('.ProseMirror');
+    expect(pageBody).toContain('.ql-editor');
+    expect(pageBody).toContain('.tiptap');
+    expect(pageBody).toContain('#layout_body');
+    expect(pageBody).toContain('textContent');
+    expect(pageBody).toContain('isTopFrame');
+    expect(pageBody).toContain('url: tab.url || url');
+    expect(pageBody).toContain('.outline');
+    expect(pageBody).toContain('[class*="toc"]');
+    expect(pageBody).toContain('.sort((left, right)');
+  });
+
+  test('reads selected text from every accessible frame and ignores empty results', () => {
+    const selectionStart = backgroundSource.indexOf('private async getSelectionContent');
+    const body = backgroundSource.slice(selectionStart);
+
+    expect(body).toContain('allFrames: true');
+    expect(body).toContain('window.getSelection()');
+    expect(body).toContain('content.trim().length > 0');
+    expect(body).toContain('url: tab.url || url');
+    expect(body).toContain("type: 'selection'");
   });
 });
 
