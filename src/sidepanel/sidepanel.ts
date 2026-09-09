@@ -1901,6 +1901,8 @@ const translations = {
     'action.translate': 'Translate',
     'context.fullPage': 'Full Page',
     'context.selection': 'Selected Text',
+    'context.unavailable': 'Page content unavailable',
+    'btn.retryCapture': 'Retry',
     'help.baseUrl': 'Custom endpoint for compatible APIs',
     'help.model': 'Enter API endpoint and key, then click Fetch',
     'help.model.select': 'Select a model from the list',
@@ -2007,6 +2009,8 @@ const translations = {
     'action.translate': '翻译',
     'context.fullPage': '整个网页',
     'context.selection': '选中文字',
+    'context.unavailable': '无法读取页面内容',
+    'btn.retryCapture': '重试',
     'help.baseUrl': '自定义 API 服务端点',
     'help.model': '输入 API 端点和密钥后点击获取',
     'help.model.select': '从列表中选择一个模型',
@@ -2296,9 +2300,10 @@ class SidePanelController {
    */
   private async autoFetchCurrentPage(preferSelection = false): Promise<void> {
     // Suppressed while a quote is pending — the quote is the reference
+    let activeTabUrl = '';
     try {
       if (this.quotedReply) return;
-      const activeTabUrl = await currentActiveTabUrl();
+      activeTabUrl = await currentActiveTabUrl();
       // `tabs.Tab.url` can be hidden until site access is granted. An empty
       // URL is therefore not enough to conclude that the active tab is a
       // browser-internal page: the background capture itself can still work
@@ -2320,7 +2325,7 @@ class SidePanelController {
         const response = await chrome.runtime.sendMessage({
           type: 'GET_PAGE_CONTENT'
         });
-        context = response.success ? sanitizePageContext(response.data) : null;
+        context = response?.success ? sanitizePageContext(response.data) : null;
       }
 
       if (context) {
@@ -2340,7 +2345,7 @@ class SidePanelController {
         if (isWebPageUrl(activeTabUrl)) {
           const hasAccess = await ensurePageAccessPermission(false);
           if (hasAccess) {
-            this.previewBar.classList.add('hidden');
+            this.showCaptureUnavailableBar();
           } else {
             this.showPermissionBar();
           }
@@ -2350,6 +2355,8 @@ class SidePanelController {
       }
     } catch (error) {
       console.error('Failed to auto-fetch page content:', error);
+      this.clearPageContext();
+      if (isWebPageUrl(activeTabUrl)) this.showCaptureUnavailableBar();
     }
   }
 
@@ -2382,6 +2389,7 @@ class SidePanelController {
     grantBtn.type = 'button';
     grantBtn.className = 'preview-authorize';
     grantBtn.textContent = I18nService.t('btn.grantAccess');
+    grantBtn.setAttribute('aria-label', I18nService.t('btn.grantAccess'));
     grantBtn.addEventListener('click', async (event) => {
       event.stopPropagation();
       const granted = await ensurePageAccessPermission(true);
@@ -2393,6 +2401,26 @@ class SidePanelController {
     });
     this.previewBar.insertBefore(grantBtn, this.previewCloseBtn);
     this.previewBar.className = 'preview-bar page';
+  }
+
+  /** Show a recoverable state when access exists but no readable content was found. */
+  private showCaptureUnavailableBar(): void {
+    this.previewIcon.textContent = '⚠️';
+    this.previewLabel.textContent = I18nService.t('context.unavailable');
+    this.previewText.textContent = I18nService.t('msg.noContent');
+    this.previewBar.querySelector('.preview-authorize')?.remove();
+
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'preview-authorize';
+    retryBtn.textContent = I18nService.t('btn.retryCapture');
+    retryBtn.setAttribute('aria-label', I18nService.t('btn.retryCapture'));
+    retryBtn.addEventListener('click', () => {
+      retryBtn.disabled = true;
+      void this.autoFetchCurrentPage();
+    });
+    this.previewBar.insertBefore(retryBtn, this.previewCloseBtn);
+    this.previewBar.className = 'preview-bar unavailable';
   }
 
   /**
@@ -3363,8 +3391,9 @@ class SidePanelController {
    * Fetch current page context, auto-detecting if user has selected text
    */
   private async fetchCurrentPageContext(activeTabUrlOverride?: string): Promise<void> {
+    let activeTabUrl = '';
     try {
-      const activeTabUrl = activeTabUrlOverride ?? await currentActiveTabUrl();
+      activeTabUrl = activeTabUrlOverride ?? await currentActiveTabUrl();
       // Keep the non-web guard when Chrome exposes the URL. An empty URL can
       // also mean that tabs access is hidden, while scripting may still be
       // authorized for the active tab via activeTab.
@@ -3397,21 +3426,26 @@ class SidePanelController {
         type: 'GET_PAGE_CONTENT'
       });
 
-      const pageContext = sanitizePageContext(pageResponse.data);
-      if (pageResponse.success && pageContext) {
+      const pageContext = sanitizePageContext(pageResponse?.data);
+      if (pageResponse?.success && pageContext) {
         this.currentContext = pageContext;
         this.contextDismissed = false;
         this.showPagePreviewBar(pageContext.title);
       }
 
       if (!this.currentContext) {
-        // No readable page context — hide any lingering preview bar so the
-        // UI never claims a reference that won't actually be sent.
-        this.previewBar.classList.add('hidden');
+        // No readable page context — do not leave a stale preview claiming a
+        // reference that will not be sent. Keep a retry path on web pages.
+        if (isWebPageUrl(activeTabUrl)) {
+          this.showCaptureUnavailableBar();
+        } else {
+          this.previewBar.classList.add('hidden');
+        }
       }
     } catch (error) {
       console.error('Failed to auto-fetch page content:', error);
-      // Don't show error to user, just continue without context
+      this.clearPageContext();
+      if (isWebPageUrl(activeTabUrl)) this.showCaptureUnavailableBar();
     }
   }
 

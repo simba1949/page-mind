@@ -124,9 +124,10 @@ describe('sidepanel.ts: startup context capture', () => {
 
   test('skips context and authorization on non-web tabs', () => {
     const fetchStart = ts.indexOf('private async autoFetchCurrentPage');
-    const selectionProbe = ts.indexOf("type: 'GET_SELECTION'", fetchStart);
-    const webPageGuard = ts.indexOf('if (activeTabUrl && !isWebPageUrl(activeTabUrl))', fetchStart);
-    expect(webPageGuard).toBeGreaterThan(fetchStart);
+    const autoBody = ts.slice(fetchStart, ts.indexOf('\n  /**', fetchStart));
+    const selectionProbe = autoBody.indexOf('this.getCurrentSelectionContext(activeTabUrl)');
+    const webPageGuard = autoBody.indexOf('if (activeTabUrl && !isWebPageUrl(activeTabUrl))');
+    expect(webPageGuard).toBeGreaterThan(-1);
     expect(webPageGuard).toBeLessThan(selectionProbe);
 
     const sendFetchStart = ts.indexOf('private async fetchCurrentPageContext');
@@ -138,7 +139,7 @@ describe('sidepanel.ts: startup context capture', () => {
 
   test('does not reject a page solely because Chrome hides its tab URL', () => {
     const fetchStart = ts.indexOf('private async autoFetchCurrentPage');
-    const urlRead = ts.indexOf('const activeTabUrl = await currentActiveTabUrl();', fetchStart);
+    const urlRead = ts.indexOf('activeTabUrl = await currentActiveTabUrl();', fetchStart);
     const capture = ts.indexOf("type: 'GET_PAGE_CONTENT'", fetchStart);
     expect(urlRead).toBeGreaterThan(fetchStart);
     expect(capture).toBeGreaterThan(urlRead);
@@ -164,15 +165,17 @@ describe('sidepanel.ts: startup context capture', () => {
 
   test('does not restore a stored selection on a non-matching tab', () => {
     const pendingStart = ts.indexOf('private async checkPendingContext');
-    const pendingGuard = ts.indexOf('isWebPageUrl(activeTabUrl)', pendingStart);
-    const pendingAssignment = ts.indexOf('this.currentContext = pendingContext', pendingStart);
-    expect(pendingGuard).toBeGreaterThan(pendingStart);
+    const pendingBody = ts.slice(pendingStart, ts.indexOf('\n  /**', pendingStart));
+    const pendingGuard = pendingBody.indexOf('isWebPageUrl(activeTabUrl)');
+    const pendingAssignment = pendingBody.indexOf('this.currentContext = pendingContext');
+    expect(pendingGuard).toBeGreaterThan(-1);
     expect(pendingGuard).toBeLessThan(pendingAssignment);
 
     const menuStart = ts.indexOf('private async handleContextFromMenu');
-    const menuGuard = ts.indexOf('isWebPageUrl(activeTabUrl)', menuStart);
-    const menuAssignment = ts.indexOf('this.currentContext = context', menuStart);
-    expect(menuGuard).toBeGreaterThan(menuStart);
+    const menuBody = ts.slice(menuStart, ts.indexOf('\n  /**', menuStart));
+    const menuGuard = menuBody.indexOf('isWebPageUrl(activeTabUrl)');
+    const menuAssignment = menuBody.indexOf('this.currentContext = context');
+    expect(menuGuard).toBeGreaterThan(-1);
     expect(menuGuard).toBeLessThan(menuAssignment);
   });
 });
@@ -194,9 +197,12 @@ describe('background extraction: nested document and selection handling', () => 
     expect(pageBody).toContain('textContent');
     expect(pageBody).toContain('isTopFrame');
     expect(pageBody).toContain('url: tab.url || url');
+    expect(backgroundSource).toContain('function selectBestPageFrame');
+    expect(backgroundSource).toContain('sameOriginFrames');
+    expect(backgroundSource).toContain('originOf(frame.url) === activeOrigin');
     expect(pageBody).toContain('.outline');
     expect(pageBody).toContain('[class*="toc"]');
-    expect(pageBody).toContain('.sort((left, right)');
+    expect(backgroundSource).toContain('.sort((left, right)');
   });
 
   test('reads selected text from every accessible frame and ignores empty results', () => {
@@ -205,9 +211,30 @@ describe('background extraction: nested document and selection handling', () => 
 
     expect(body).toContain('allFrames: true');
     expect(body).toContain('window.getSelection()');
-    expect(body).toContain('content.trim().length > 0');
     expect(body).toContain('url: tab.url || url');
     expect(body).toContain("type: 'selection'");
+    const validationStart = backgroundSource.indexOf('function isPageFrameResult');
+    expect(backgroundSource.slice(validationStart, selectionStart)).toContain('content.trim().length > 0');
+  });
+});
+
+describe('sidepanel capture failure state and accessibility contract', () => {
+  const panel = readFileSync(join(root, 'src', 'sidepanel', 'sidepanel.ts'), 'utf8');
+  const htmlSource = readFileSync(join(root, 'src', 'sidepanel', 'index.html'), 'utf8');
+  const cssSource = readFileSync(join(root, 'src', 'sidepanel', 'styles.css'), 'utf8');
+
+  test('clears stale context and offers a retry after capture failure', () => {
+    expect(panel).toContain('private showCaptureUnavailableBar(): void');
+    expect(panel).toContain("this.previewLabel.textContent = I18nService.t('context.unavailable');");
+    expect(panel).toContain("retryBtn.setAttribute('aria-label', I18nService.t('btn.retryCapture'))");
+    expect(panel).toContain('this.clearPageContext();');
+    expect(panel).toContain("this.previewBar.className = 'preview-bar unavailable';");
+  });
+
+  test('keeps the unavailable state readable in a narrow side panel', () => {
+    expect(htmlSource).toContain('id="preview-bar" class="preview-bar page hidden" role="status" aria-live="polite"');
+    expect(cssSource).toContain('.preview-bar.unavailable');
+    expect(cssSource).toContain('text-overflow: ellipsis');
   });
 });
 

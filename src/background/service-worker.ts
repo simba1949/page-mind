@@ -1,6 +1,53 @@
 // Self-contained service worker without imports
 // Storage functionality inlined for service worker compatibility
 
+interface PageFrameResult {
+  title: string;
+  url: string;
+  content: string;
+  isTopFrame?: boolean;
+  score?: number;
+}
+
+function isPageFrameResult(value: unknown): value is PageFrameResult {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<PageFrameResult>;
+  return typeof candidate.title === 'string' && typeof candidate.url === 'string' &&
+    typeof candidate.content === 'string' && candidate.content.trim().length > 0;
+}
+
+function originOf(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Select a page frame without automatically trusting unrelated embedded origins. */
+function selectBestPageFrame(values: unknown[], activeTabUrl: string): PageFrameResult | null {
+  const frames = values.filter(isPageFrameResult);
+  const activeOrigin = originOf(activeTabUrl);
+  const sameOriginFrames = activeOrigin
+    ? frames.filter(frame => originOf(frame.url) === activeOrigin)
+    : frames;
+  const candidates = sameOriginFrames.length > 0
+    ? sameOriginFrames
+    : frames.filter(frame => frame.isTopFrame);
+
+  return [...candidates].sort((left, right) =>
+    (right.score || right.content.length) - (left.score || left.content.length)
+  )[0] || null;
+}
+
+function selectBestSelectionFrame(values: unknown[]): PageFrameResult | null {
+  return values.filter(isPageFrameResult).sort((left, right) =>
+    right.content.length - left.content.length
+  )[0] || null;
+}
+
 /**
  * Simple storage service for background script
  */
@@ -319,22 +366,8 @@ class BackgroundService {
       return null;
     }
 
-    type PageFrameResult = {
-      title: string;
-      url: string;
-      content: string;
-      score?: number;
-    };
     const frameResults: unknown[] = (results || []).map(result => result.result as unknown);
-    const bestResult = frameResults
-      .filter((value): value is PageFrameResult => {
-        if (!value || typeof value !== 'object') return false;
-        const candidate = value as Partial<PageFrameResult>;
-        return typeof candidate.title === 'string' && typeof candidate.url === 'string' &&
-          typeof candidate.content === 'string' && candidate.content.trim().length > 0;
-      })
-      .sort((left, right) => (right.score || right.content.length) -
-        (left.score || left.content.length))[0];
+    const bestResult = selectBestPageFrame(frameResults, tab.url || '');
 
     if (bestResult) {
       const { title, url, content } = bestResult;
@@ -390,14 +423,7 @@ class BackgroundService {
     }
 
     const frameResults: unknown[] = (results || []).map(result => result.result as unknown);
-    const bestResult = frameResults
-      .filter((value): value is { title: string; url: string; content: string } => {
-        if (!value || typeof value !== 'object') return false;
-        const candidate = value as Partial<{ title: string; url: string; content: string }>;
-        return typeof candidate.title === 'string' && typeof candidate.url === 'string' &&
-          typeof candidate.content === 'string' && candidate.content.trim().length > 0;
-      })
-      .sort((left, right) => right.content.length - left.content.length)[0];
+    const bestResult = selectBestSelectionFrame(frameResults);
 
     if (bestResult) {
       const { title, url, content } = bestResult;

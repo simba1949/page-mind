@@ -921,6 +921,15 @@ body {
   color: var(--accent-blue);
 }
 
+.preview-bar.unavailable {
+  background: var(--accent-warm-light);
+  border-color: var(--border-accent);
+}
+
+.preview-bar.unavailable .preview-label {
+  color: var(--accent-warm);
+}
+
 .preview-text {
   font-size: 12px;
   color: var(--text-secondary);
