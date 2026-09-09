@@ -32,7 +32,8 @@ Built with Manifest V3, pure TypeScript + CSS. Supports any OpenAI-compatible or
 ### Security & Privacy
 
 - **API key encryption** — API keys are encrypted with AES-GCM before being stored.
-- **Session-only storage** — By default, the API key lives only in `chrome.storage.session` and is cleared when the browser closes. Optionally, you can check "Remember key on this device" to persist it in `chrome.storage.local`.
+- **Profile-protected API key storage** — When enabled, the API key is AES-GCM protected inside the current Chrome profile; this is not an independent OS keychain. By default, the key lives only in `chrome.storage.session` and is cleared when the browser closes.
+- **Session-only chat history** — Messages, page context, and attachments stay in `chrome.storage.session` and are cleared when the browser closes. Starting a new chat clears the current session transcript.
 - **Page content never leaves your control** — Content is sent only to the API you configure, and only when you ask a question.
 - **DOM never modified** — Page content is cloned before text extraction; the original page is never touched.
 

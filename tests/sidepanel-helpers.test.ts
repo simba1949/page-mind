@@ -1,8 +1,11 @@
 import {
   createThinkSeparator,
   endpointOriginPattern,
+  isWebPageUrl,
   modelOmitsTemperature,
+  nextThemeFromEffectiveTheme,
   openAICompatibleErrorMessage,
+  pageOriginPattern,
   parseCustomModels,
   sanitizeAppSettings,
   stripThinkTags
@@ -21,7 +24,7 @@ describe('sanitizeAppSettings', () => {
     expect(settings.profiles[0].model).toBe('safe-model');
     expect(settings.profiles[0].customModels).toEqual(['m1', 'm2']);
     expect(settings.language).toBe('en');
-    expect(settings.theme).toBe('auto');
+    expect(settings.theme).toBe('light');
   });
 
   test('caps API profiles at ten and keeps a valid active profile', () => {
@@ -35,7 +38,7 @@ describe('sanitizeAppSettings', () => {
       rememberApiKey: false,
       remark: `配置 ${index}`
     }));
-    const settings = sanitizeAppSettings({ profiles, activeProfileId: 'p11', language: 'zh', theme: 'auto' });
+    const settings = sanitizeAppSettings({ profiles, activeProfileId: 'p11', language: 'zh', theme: 'light' });
 
     expect(settings.profiles).toHaveLength(10);
     expect(settings.activeProfileId).toBe('p0');
@@ -49,6 +52,30 @@ describe('endpointOriginPattern', () => {
 
   test('supports localhost endpoints without widening to every port', () => {
     expect(endpointOriginPattern('http://localhost:3000/v1')).toBe('http://localhost:3000/*');
+  });
+});
+
+describe('pageOriginPattern', () => {
+  test('limits page access to the current HTTPS origin', () => {
+    expect(pageOriginPattern('https://news.example.com/article?id=1')).toBe('https://news.example.com/*');
+  });
+
+  test('allows local development pages but rejects arbitrary HTTP pages', () => {
+    expect(pageOriginPattern('http://localhost:3000/app')).toBe('http://localhost:3000/*');
+    expect(pageOriginPattern('http://example.com/app')).toBeNull();
+  });
+});
+
+describe('isWebPageUrl', () => {
+  test('allows normal HTTP and HTTPS pages', () => {
+    expect(isWebPageUrl('https://example.com/article')).toBe(true);
+    expect(isWebPageUrl('http://localhost:3000/app')).toBe(true);
+  });
+
+  test('rejects browser-internal and extension pages', () => {
+    expect(isWebPageUrl('chrome://newtab/')).toBe(false);
+    expect(isWebPageUrl('chrome-extension://abc/index.html')).toBe(false);
+    expect(isWebPageUrl('')).toBe(false);
   });
 });
 
@@ -91,6 +118,16 @@ describe('modelOmitsTemperature', () => {
     // A model merely NAMED with a leading "o" is not an o-series model
     expect(modelOmitsTemperature('openrouter/llama')).toBe(false);
     expect(modelOmitsTemperature('')).toBe(false);
+  });
+});
+
+describe('nextThemeFromEffectiveTheme', () => {
+  test('switches from the visible light theme to dark in one click', () => {
+    expect(nextThemeFromEffectiveTheme('light')).toBe('dark');
+  });
+
+  test('switches from the visible dark theme to light in one click', () => {
+    expect(nextThemeFromEffectiveTheme('dark')).toBe('light');
   });
 });
 

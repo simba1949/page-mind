@@ -62,6 +62,16 @@ describe('APIService', () => {
     consoleError.mockRestore();
   });
 
+  test('caps oversized provider error bodies', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: () => Promise.resolve('x'.repeat(40_000))
+    });
+
+    await expect(new APIService(config).fetchModels()).rejects.toThrow('HTTP 502');
+  });
+
   describe('truncateContent', () => {
     test('truncates content past the limit with an ellipsis', () => {
       const truncated = new APIService(config).truncateContent('a'.repeat(10000), 8000);

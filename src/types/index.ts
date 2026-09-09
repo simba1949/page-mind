@@ -29,16 +29,28 @@ export interface AppSettings {
   profiles: ApiProfile[];
   activeProfileId: string | null;
   language: 'en' | 'zh';
-  theme: 'light' | 'dark' | 'auto';
+  theme: 'light' | 'dark';
 }
 
 // Message types
+export interface MessageAttachment {
+  id: string;
+  kind: 'image' | 'text';
+  name: string;
+  mime: string;
+  dataUrl?: string;
+  text?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
   context?: PageContext;
+  quote?: string;
+  attachments?: MessageAttachment[];
+  reasoning?: string;
 }
 
 export interface PageContext {
@@ -70,11 +82,11 @@ export interface ChatResponse {
 // Extension message types
 export interface ExtensionMessage {
   type: 'GET_PAGE_CONTENT' | 'GET_SELECTION' | 'SEND_TO_AI' | 'OPEN_SIDEPANEL';
-  payload?: any;
+  payload?: unknown;
 }
 
 export interface ContentResponse {
   success: boolean;
-  data?: any;
+  data?: unknown;
   error?: string;
 }
