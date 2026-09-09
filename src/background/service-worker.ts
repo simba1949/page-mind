@@ -238,39 +238,67 @@ class BackgroundService {
         safeUrl.search = '';
         safeUrl.hash = '';
 
-        // Try to get main content area (priority order for better content extraction)
-        const mainContent =
-          document.querySelector('article') ||
-          document.querySelector('main') ||
-          document.querySelector('[role="main"]') ||
-          document.querySelector('.post-content') ||
-          document.querySelector('.article-content') ||
-          document.querySelector('.entry-content') ||
-          document.querySelector('.content') ||
-          document.body;
+        const contentSelectors = [
+          '[contenteditable="true"]',
+          '.ProseMirror',
+          '.ql-editor',
+          '.tiptap',
+          '[role="textbox"]',
+          'article',
+          'main',
+          '[role="main"]',
+          '.post-content',
+          '.article-content',
+          '.entry-content',
+          '.content'
+        ];
+        const candidates = Array.from(new Set(
+          contentSelectors.flatMap(selector => Array.from(document.querySelectorAll(selector)))
+        ));
 
-        // Clone the content to avoid modifying the original page
-        const clonedContent = mainContent.cloneNode(true) as HTMLElement;
+        const extractText = (element: Element): string => {
+          // Clone the content to avoid modifying the original page.
+          const clonedContent = element.cloneNode(true) as HTMLElement;
+          const elementsToRemove = clonedContent.querySelectorAll(
+            'script, style, link, meta, noscript, iframe, svg, ' +
+            'nav, footer, header, aside, ' +
+            '[hidden], [aria-hidden="true"], [inert], ' +
+            '[role="navigation"], [role="banner"], [role="complementary"], [role="search"], ' +
+            '.advertisement, .ads, .social-share, .comments, .sidebar, ' +
+            '.nav, .navigation, .menu, .footer, .header, .widget, ' +
+            '.outline, [class*="outline"], .toc, [class*="toc"], ' +
+            '.related-posts, .recommended, .popup, .modal, .overlay'
+          );
+          elementsToRemove.forEach(el => el.remove());
+          return clonedContent.textContent || '';
+        };
 
-        // Remove non-content elements from the clone (not the original page)
-        const elementsToRemove = clonedContent.querySelectorAll(
-          'script, style, link, meta, noscript, iframe, svg, ' +
-          'nav, footer, header, aside, ' +
-          '[role="navigation"], [role="banner"], [role="complementary"], [role="search"], ' +
-          '.advertisement, .ads, .social-share, .comments, .sidebar, ' +
-          '.nav, .navigation, .menu, .footer, .header, .widget, ' +
-          '.related-posts, .recommended, .popup, .modal, .overlay'
-        );
-        elementsToRemove.forEach(el => el.remove());
+        let bestContent = '';
+        let bestScore = 0;
+        for (const candidate of candidates) {
+          const candidateContent = extractText(candidate);
+          if (!candidateContent.trim()) continue;
+          const isEditor = candidate.matches(
+            '[contenteditable="true"], .ProseMirror, .ql-editor, .tiptap, [role="textbox"]'
+          );
+          const score = candidateContent.length + (isEditor ? 1_000 : 0);
+          if (score > bestScore) {
+            bestContent = candidateContent;
+            bestScore = score;
+          }
+        }
 
-        // Extract text content from the clone
-        let content = clonedContent.innerText || clonedContent.textContent || '';
+        // A page without a recognized content root still gets a safe body
+        // fallback, while the candidate scoring above prefers document editors
+        // over an outline or other navigation container.
+        let content = bestContent || extractText(document.body);
 
         // Clean up the content (denoise)
         content = content
-          .replace(/\s+/g, ' ')           // Collapse whitespace
-          .replace(/\n\s*\n/g, '\n')      // Remove empty lines
-          .replace(/[^\S\n]+/g, ' ')      // Collapse non-newline whitespace
+          .replace(/\r\n?/g, '\n')
+          .replace(/[ \t\f\v]+/g, ' ')
+          .replace(/[ \t]*\n[ \t]*/g, '\n')
+          .replace(/\n{3,}/g, '\n\n')
           .trim();
 
         // Remove very short lines that are likely noise (less than 3 chars)

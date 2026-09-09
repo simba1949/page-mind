@@ -110,12 +110,14 @@ describe('sidepanel.ts: startup context capture', () => {
   });
 
   test('the startup selection probe has its own failure guard', () => {
-    // A rejected GET_SELECTION must not skip the full-page fallback below it.
-    const at = ts.indexOf('private async autoFetchCurrentPage');
-    expect(at).toBeGreaterThan(-1);
-    const body = ts.slice(at, ts.indexOf('\n  /**', at));
-    expect(body).toContain("type: 'GET_SELECTION'");
-    expect(body).toMatch(/try \{\s*\n\s*const selectionResponse[\s\S]*?\} catch \{/);
+    // A rejected selection read must not skip the full-page fallback below it.
+    const helper = ts.indexOf('private async getCurrentSelectionContext');
+    const autoFetch = ts.indexOf('private async autoFetchCurrentPage');
+    expect(helper).toBeGreaterThan(-1);
+    expect(autoFetch).toBeGreaterThan(-1);
+    expect(helper).toBeGreaterThan(autoFetch);
+    expect(ts.slice(helper)).toContain("type: 'GET_SELECTION'");
+    expect(ts.slice(helper)).toMatch(/try \{[\s\S]*?\} catch \{/);
   });
 
   test('skips context and authorization on non-web tabs', () => {
@@ -126,9 +128,11 @@ describe('sidepanel.ts: startup context capture', () => {
     expect(webPageGuard).toBeLessThan(selectionProbe);
 
     const sendFetchStart = ts.indexOf('private async fetchCurrentPageContext');
-    const permissionRequest = ts.indexOf('ensurePageAccessPermission(true)', sendFetchStart);
-    const sendWebPageGuard = ts.indexOf('if (activeTabUrl && !isWebPageUrl(activeTabUrl))', sendFetchStart);
-    expect(sendWebPageGuard).toBeGreaterThan(sendFetchStart);
+    const sendBody = ts.slice(sendFetchStart);
+    const permissionRequest = sendBody.indexOf('ensurePageAccessPermission(true)');
+    const sendWebPageGuard = sendBody.indexOf('activeTabUrl && !isWebPageUrl(activeTabUrl)');
+    expect(sendFetchStart).toBeGreaterThan(-1);
+    expect(sendWebPageGuard).toBeGreaterThan(-1);
     expect(sendWebPageGuard).toBeLessThan(permissionRequest);
   });
 
@@ -140,11 +144,22 @@ describe('sidepanel.ts: startup context capture', () => {
     expect(capture).toBeGreaterThan(urlRead);
     expect(ts.slice(urlRead, capture)).toContain('activeTabUrl && !isWebPageUrl(activeTabUrl)');
 
-    const sendFetchStart = ts.indexOf('private async fetchCurrentPageContext');
-    const sendCapture = ts.indexOf("type: 'GET_SELECTION'", sendFetchStart);
-    const sendPermission = ts.indexOf('ensurePageAccessPermission(true)', sendFetchStart);
-    expect(sendPermission).toBeGreaterThan(sendFetchStart);
-    expect(sendCapture).toBeGreaterThan(sendPermission);
+    const sendStart = ts.indexOf('private async sendMessage');
+    const sendRefresh = ts.indexOf('await this.refreshContextForActiveTab();', sendStart);
+    const sendProbe = ts.indexOf('getCurrentSelectionContext(activeTabUrl)', sendRefresh);
+    expect(sendRefresh).toBeGreaterThan(sendStart);
+    expect(sendProbe).toBeGreaterThan(sendRefresh);
+
+    const pageFetchStart = ts.indexOf('private async fetchCurrentPageContext');
+    expect(ts.slice(pageFetchStart)).toContain('ensurePageAccessPermission(true)');
+  });
+
+  test('a new page selection replaces an already captured full-page context', () => {
+    const refreshStart = ts.indexOf('private async refreshContextForActiveTab');
+    const selectionProbe = ts.indexOf('getCurrentSelectionContext(activeTabUrl)', refreshStart);
+    const keepContext = ts.indexOf('if (contextMatchesActiveTab || this.contextDismissed) return;', refreshStart);
+    expect(selectionProbe).toBeGreaterThan(refreshStart);
+    expect(selectionProbe).toBeLessThan(keepContext);
   });
 
   test('does not render a tab preview when the tab URL is not a web page', () => {
@@ -173,6 +188,16 @@ describe('sidepanel.ts: startup context capture', () => {
 describe('context-menu handoff: storage is the reliable channel', () => {
   const backgroundSource = readFileSync(join(root, 'src', 'background', 'service-worker.ts'), 'utf8');
   const panel = readFileSync(join(root, 'src', 'sidepanel', 'sidepanel.ts'), 'utf8');
+
+  test('page extraction recognizes rich-text editors and filters outline chrome', () => {
+    expect(backgroundSource).toContain('[contenteditable="true"]');
+    expect(backgroundSource).toContain('.ProseMirror');
+    expect(backgroundSource).toContain('.ql-editor');
+    expect(backgroundSource).toContain('.tiptap');
+    expect(backgroundSource).toContain('.outline');
+    expect(backgroundSource).toContain('[class*="outline"]');
+    expect(backgroundSource).toContain('clonedContent.textContent');
+  });
 
   test('an unreachable panel downgrades to a warning, not an error', () => {
     // "Receiving end does not exist" is EXPECTED while the panel is still
