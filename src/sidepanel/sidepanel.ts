@@ -3464,7 +3464,7 @@ class SidePanelController {
       assistantMessage.content = response.content || assistantMessage.content;
       assistantMessage.reasoning = response.reasoning || assistantMessage.reasoning;
       const stick = this.isChatNearBottom();
-      contentEl.innerHTML = renderMarkdown(assistantMessage.content);
+      this.renderFinalStreamContent(contentEl, assistantMessage.content);
       if (assistantMessage.reasoning) {
         reasoningEl.hidden = false;
         reasoningBody.textContent = assistantMessage.reasoning;
@@ -3481,7 +3481,7 @@ class SidePanelController {
         messageEl.remove();
       } else {
         // Keep whatever was streamed before the connection dropped.
-        contentEl.innerHTML = renderMarkdown(assistantMessage.content);
+        this.renderFinalStreamContent(contentEl, assistantMessage.content);
         this.messages.push(assistantMessage);
         await this.saveChatHistory();
       }
@@ -4509,10 +4509,14 @@ Instructions:
   }
 
   /**
-   * Coalesce stream deltas into one render per animation frame. Stickiness
-   * is measured BEFORE the DOM mutation so a tall render does not push the
-   * viewport out of follow range; scrolling bypasses CSS smooth-behavior,
-   * which would otherwise stack one animated scroll per frame.
+   * Coalesce stream deltas into one cheap text update per animation frame.
+   * Markdown is intentionally deferred until the response is complete:
+   * parsing an incomplete document on every delta makes long answers
+   * progressively more expensive and causes unstable partial formatting.
+   * Stickiness is measured BEFORE the DOM mutation so a tall render does not
+   * push the viewport out of follow range; scrolling bypasses CSS
+   * smooth-behavior, which would otherwise stack one animated scroll per
+   * frame.
    */
   private scheduleStreamRender(contentEl: HTMLElement, reasoningBody: HTMLElement | null, message: ChatMessage): void {
     if (this.streamRenderRaf !== null) return;
@@ -4520,9 +4524,20 @@ Instructions:
       this.streamRenderRaf = null;
       const stick = this.isChatNearBottom();
       if (reasoningBody) reasoningBody.textContent = message.reasoning || '';
-      contentEl.innerHTML = renderMarkdown(message.content);
+      // Keep the typing indicator visible while the model is only reasoning.
+      // Once answer text arrives, show it as plain text until finalization.
+      if (message.content) {
+        contentEl.classList.add('streaming');
+        contentEl.textContent = message.content;
+      }
       if (stick) this.scrollChatBottomInstant();
     });
+  }
+
+  /** Replace the in-flight text with the final, interactive Markdown view. */
+  private renderFinalStreamContent(contentEl: HTMLElement, content: string): void {
+    contentEl.classList.remove('streaming');
+    contentEl.innerHTML = renderMarkdown(content);
   }
 
   private cancelStreamRender(): void {

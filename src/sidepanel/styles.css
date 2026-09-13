@@ -497,6 +497,13 @@ body {
   overflow-wrap: break-word;
 }
 
+/* Keep the in-flight answer cheap to update while preserving its line breaks.
+   The final response is rendered as Markdown once the stream completes. */
+.message-content.streaming {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
 

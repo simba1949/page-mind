@@ -74,6 +74,21 @@ describe('styles.css: chat viewport scrolling', () => {
   });
 });
 
+describe('sidepanel.ts: streaming render stability', () => {
+  test('updates in-flight answers as text and renders Markdown only at finalization', () => {
+    const start = sidepanelTs.indexOf('private scheduleStreamRender');
+    const end = sidepanelTs.indexOf('\n  private cancelStreamRender', start);
+    const streamBody = sidepanelTs.slice(start, end);
+    const streamingStyle = ruleBlock(css, '.message-content.streaming {');
+
+    expect(streamBody).toContain('contentEl.textContent = message.content');
+    expect(streamBody).not.toContain('renderMarkdown(message.content)');
+    expect(streamingStyle).toContain('white-space: pre-wrap');
+    expect(sidepanelTs).toContain('private renderFinalStreamContent');
+    expect(sidepanelTs).toContain('this.renderFinalStreamContent(contentEl, assistantMessage.content)');
+  });
+});
+
 describe('sidepanel.ts: explicit light/dark theme contract', () => {
   test('does not react to the operating system color scheme', () => {
     expect(sidepanelTs).toContain("theme: stored.theme === 'dark' ? 'dark' : 'light'");
