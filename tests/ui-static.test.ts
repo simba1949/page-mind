@@ -63,6 +63,17 @@ describe('styles.css: light theme keeps a single accent family', () => {
   });
 });
 
+describe('styles.css: chat viewport scrolling', () => {
+  test('lets the flex layout shrink around the scrollable message list', () => {
+    const chat = ruleBlock(css, '.chat-container {');
+    const messages = ruleBlock(css, '.chat-messages {');
+
+    expect(chat).toContain('min-height: 0');
+    expect(messages).toContain('min-height: 0');
+    expect(messages).toContain('overflow-y: auto');
+  });
+});
+
 describe('sidepanel.ts: explicit light/dark theme contract', () => {
   test('does not react to the operating system color scheme', () => {
     expect(sidepanelTs).toContain("theme: stored.theme === 'dark' ? 'dark' : 'light'");
