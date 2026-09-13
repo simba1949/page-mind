@@ -319,6 +319,7 @@ body {
 
 .chat-container {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -326,6 +327,7 @@ body {
 
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-lg);
   scroll-behavior: smooth;
@@ -492,6 +494,13 @@ body {
 
 .message-content.markdown-body {
   white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* Keep the in-flight answer cheap to update while preserving its line breaks.
+   The final response is rendered as Markdown once the stream completes. */
+.message-content.streaming {
+  white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 
