@@ -81,7 +81,7 @@ describe('sidepanel.ts: streaming render stability', () => {
     const streamBody = sidepanelTs.slice(start, end);
     const streamingStyle = ruleBlock(css, '.message-content.streaming {');
 
-    expect(streamBody).toContain('contentEl.textContent = message.content');
+    expect(streamBody).toContain('appendStreamText(contentEl, message.content)');
     expect(streamBody).not.toContain('renderMarkdown(message.content)');
     expect(streamingStyle).toContain('white-space: pre-wrap');
     expect(sidepanelTs).toContain('private renderFinalStreamContent');
@@ -321,7 +321,7 @@ describe('index.html: composer and settings markup hygiene', () => {
 
   test('surfaces chat request failures in the dialog, without raw console output', () => {
     expect(sidepanelTs).not.toContain('Chat request failed (HTTP');
-    expect(sidepanelTs).toContain("this.showError(error instanceof Error ? error.message : I18nService.t('msg.apiError'))");
+    expect(sidepanelTs).toContain("this.showError(error instanceof Error ? error.message : I18nService.t('msg.apiError'), this.followStream)");
   });
 
   test('keeps one APIService implementation in the side panel module', () => {
