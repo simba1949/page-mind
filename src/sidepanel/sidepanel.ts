@@ -1223,6 +1223,17 @@ interface StreamHandlers {
 
 const MAX_RENDERED_OUTPUT_CHARS = 200_000;
 
+/** Append only the new suffix, preserving selection and scroll anchoring. */
+export function appendStreamText(element: HTMLElement, content: string): void {
+  const node = element.firstChild;
+  if (node?.nodeType === Node.TEXT_NODE && element.childNodes.length === 1) {
+    const text = node as Text;
+    if (content.length > text.length) text.appendData(content.slice(text.length));
+  } else if (content) {
+    element.replaceChildren(document.createTextNode(content));
+  }
+}
+
 function appendCappedText(current: string, delta: string): string {
   const remaining = MAX_RENDERED_OUTPUT_CHARS - current.length;
   return remaining > 0 ? delta.slice(0, remaining) : '';
@@ -2112,6 +2123,8 @@ class SidePanelController {
   private availableModels: string[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
   private streamRenderRaf: number | null = null;
+  private followStream = true;
+  private lastChatScrollTop = 0;
   private profileEditor!: HTMLElement;
   private closeProfileEditorBtn!: HTMLButtonElement;
   private profileEditorTitle!: HTMLElement;
@@ -2604,6 +2617,21 @@ class SidePanelController {
 
   /** Register message input and send actions. */
   private setupMessageEvents(): void {
+    // An upward wheel gesture must stop following before the next stream
+    // frame, even when the reader is still within the old 80px threshold.
+    this.chatMessages.addEventListener('wheel', event => {
+      if (event.deltaY < 0) this.followStream = false;
+    }, { passive: true });
+    this.chatMessages.addEventListener('scroll', () => {
+      const el = this.chatMessages;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight <= 2) {
+        this.followStream = true;
+      } else if (el.scrollTop < this.lastChatScrollTop) {
+        this.followStream = false;
+      }
+      this.lastChatScrollTop = el.scrollTop;
+    }, { passive: true });
+
     this.sendBtn.addEventListener('click', () => this.sendMessage());
     this.messageInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -3408,6 +3436,7 @@ class SidePanelController {
    */
   private async sendToAI(userMessage: ChatMessage): Promise<void> {
     this.isSending = true;
+    this.followStream = true;
     this.chatMessages.setAttribute('aria-busy', 'true');
     this.updateSendButton();
 
@@ -3463,18 +3492,19 @@ class SidePanelController {
       // Reconcile with the final aggregated result
       assistantMessage.content = response.content || assistantMessage.content;
       assistantMessage.reasoning = response.reasoning || assistantMessage.reasoning;
-      const stick = this.isChatNearBottom();
+      const stick = this.followStream;
       this.renderFinalStreamContent(contentEl, assistantMessage.content);
       if (assistantMessage.reasoning) {
         reasoningEl.hidden = false;
         reasoningBody.textContent = assistantMessage.reasoning;
       }
+      if (stick) this.scrollChatBottomInstant();
 
       this.messages.push(assistantMessage);
       await this.saveChatHistory();
-      if (stick) this.scrollToBottom();
     } catch (error) {
       this.cancelStreamRender();
+      const stick = this.followStream;
 
       if (!assistantMessage.content) {
         // Nothing useful streamed in before the failure - drop the empty bubble.
@@ -3482,11 +3512,13 @@ class SidePanelController {
       } else {
         // Keep whatever was streamed before the connection dropped.
         this.renderFinalStreamContent(contentEl, assistantMessage.content);
+        if (assistantMessage.reasoning) reasoningBody.textContent = assistantMessage.reasoning;
+        if (stick) this.scrollChatBottomInstant();
         this.messages.push(assistantMessage);
         await this.saveChatHistory();
       }
 
-      this.showError(error instanceof Error ? error.message : I18nService.t('msg.apiError'));
+      this.showError(error instanceof Error ? error.message : I18nService.t('msg.apiError'), this.followStream);
     } finally {
       this.isSending = false;
       this.chatMessages.setAttribute('aria-busy', 'false');
@@ -4463,7 +4495,7 @@ Instructions:
   /**
    * Show error message
    */
-  private showError(message: string): void {
+  private showError(message: string, scroll = true): void {
     const messageEl = document.createElement('div');
     messageEl.className = 'message error';
     messageEl.setAttribute('role', 'alert');
@@ -4475,7 +4507,7 @@ Instructions:
     bubble.appendChild(content);
     messageEl.appendChild(bubble);
     this.chatMessages.appendChild(messageEl);
-    this.scrollToBottom();
+    if (scroll) this.scrollToBottom();
   }
 
   /**
@@ -4505,7 +4537,7 @@ Instructions:
    * Scroll chat to bottom
    */
   private scrollToBottom(): void {
-    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    this.scrollChatBottomInstant();
   }
 
   /**
@@ -4513,22 +4545,20 @@ Instructions:
    * Markdown is intentionally deferred until the response is complete:
    * parsing an incomplete document on every delta makes long answers
    * progressively more expensive and causes unstable partial formatting.
-   * Stickiness is measured BEFORE the DOM mutation so a tall render does not
-   * push the viewport out of follow range; scrolling bypasses CSS
-   * smooth-behavior, which would otherwise stack one animated scroll per
-   * frame.
+   * Following is suspended by manual upward scrolling. Reuse the same text
+   * node instead of repeatedly replacing the full accumulated answer.
    */
   private scheduleStreamRender(contentEl: HTMLElement, reasoningBody: HTMLElement | null, message: ChatMessage): void {
     if (this.streamRenderRaf !== null) return;
     this.streamRenderRaf = requestAnimationFrame(() => {
       this.streamRenderRaf = null;
-      const stick = this.isChatNearBottom();
-      if (reasoningBody) reasoningBody.textContent = message.reasoning || '';
+      const stick = this.followStream;
+      if (reasoningBody) appendStreamText(reasoningBody, message.reasoning || '');
       // Keep the typing indicator visible while the model is only reasoning.
       // Once answer text arrives, show it as plain text until finalization.
       if (message.content) {
         contentEl.classList.add('streaming');
-        contentEl.textContent = message.content;
+        appendStreamText(contentEl, message.content);
       }
       if (stick) this.scrollChatBottomInstant();
     });
@@ -4536,8 +4566,27 @@ Instructions:
 
   /** Replace the in-flight text with the final, interactive Markdown view. */
   private renderFinalStreamContent(contentEl: HTMLElement, content: string): void {
+    const chat = this.chatMessages;
+    const paused = !this.followStream;
+    const previousTop = chat.scrollTop;
+    const previousHeight = contentEl.getBoundingClientRect().height;
+    const readingOffset = chat.getBoundingClientRect().top - contentEl.getBoundingClientRect().top;
     contentEl.classList.remove('streaming');
     contentEl.innerHTML = renderMarkdown(content);
+    if (paused) {
+      // Markdown can shrink a long answer below the old scrollTop, which
+      // otherwise clamps the reader to the bottom and restarts following.
+      // Keep the relative point inside this answer; earlier messages stay put.
+      let top = previousTop;
+      if (previousHeight > 0 && readingOffset > 0) {
+        const rendered = contentEl.getBoundingClientRect();
+        const readHeight = Math.min(previousHeight, readingOffset);
+        const offset = readHeight / previousHeight * rendered.height + Math.max(0, readingOffset - previousHeight);
+        top = chat.scrollTop + rendered.top - chat.getBoundingClientRect().top + offset;
+      }
+      chat.scrollTo({ top, behavior: 'instant' });
+      this.lastChatScrollTop = chat.scrollTop;
+    }
   }
 
   private cancelStreamRender(): void {
@@ -4547,14 +4596,9 @@ Instructions:
     }
   }
 
-  /** True while the viewport is close enough to the bottom to auto-follow. */
-  private isChatNearBottom(): boolean {
-    const el = this.chatMessages;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  }
-
   private scrollChatBottomInstant(): void {
     this.chatMessages.scrollTo({ top: this.chatMessages.scrollHeight, behavior: 'instant' });
+    this.lastChatScrollTop = this.chatMessages.scrollTop;
   }
 
   /**
