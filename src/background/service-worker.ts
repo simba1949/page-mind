@@ -56,6 +56,8 @@ class BackgroundStorageService {
  * Background service worker for handling extension events
  */
 class BackgroundService {
+  private contextMenuInitializing = false;
+
   constructor() {
     this.initialize();
   }
@@ -374,10 +376,26 @@ class BackgroundService {
    */
   private setupContextMenu(): void {
     chrome.runtime.onInstalled.addListener(() => {
-      chrome.contextMenus.create({
-        id: 'askAI',
-        title: '页问',
-        contexts: ['selection']
+      // Menus can survive an update/unpacked reload. Rebuild only after
+      // cleanup completes, and avoid overlapping rebuilds in this worker.
+      if (this.contextMenuInitializing) return;
+      this.contextMenuInitializing = true;
+      chrome.contextMenus.removeAll(() => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          this.contextMenuInitializing = false;
+          console.error('Failed to reset context menus:', error.message);
+          return;
+        }
+        chrome.contextMenus.create({
+          id: 'askAI',
+          title: '页问',
+          contexts: ['selection']
+        }, () => {
+          this.contextMenuInitializing = false;
+          const error = chrome.runtime.lastError;
+          if (error) console.error('Failed to create context menu:', error.message);
+        });
       });
     });
 
