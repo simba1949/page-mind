@@ -125,7 +125,7 @@ Click the language indicator (中 / EN) in the header to switch between Chinese 
 
 ```text
 page-mind/
-├── agent.md
+├── AGENTS.md
 ├── README.md / README-EN.md
 ├── manifest.json
 ├── package.json / package-lock.json
@@ -152,7 +152,7 @@ page-mind/
 └── dist/
 ```
 
-See [agent.md](agent.md) for directory conventions. `dist/` contains the generated extension; test reports belong in `docs/reports/`, and design sources in `docs/design/`.
+See [AGENTS.md](AGENTS.md) for directory conventions. `dist/` contains the generated extension; test reports belong in `docs/reports/`, and design sources in `docs/design/`.
 
 ---
 

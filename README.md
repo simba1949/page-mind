@@ -124,7 +124,7 @@
 
 ```text
 page-mind/
-├── agent.md
+├── AGENTS.md
 ├── README.md / README-EN.md
 ├── manifest.json
 ├── package.json / package-lock.json
@@ -151,7 +151,7 @@ page-mind/
 └── dist/
 ```
 
-目录职责与新增文件规范见 [agent.md](agent.md)。`dist/` 为生成的扩展目录；测试报告放在 `docs/reports/`，设计源稿放在 `docs/design/`。
+目录职责与新增文件规范见 [AGENTS.md](AGENTS.md)。`dist/` 为生成的扩展目录；测试报告放在 `docs/reports/`，设计源稿放在 `docs/design/`。
 
 ---
 
