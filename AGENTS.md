@@ -8,7 +8,7 @@
 
 ```text
 page-mind/
-├── agent.md
+├── AGENTS.md
 ├── README.md / README-EN.md
 ├── manifest.json
 ├── package.json / package-lock.json
@@ -37,7 +37,7 @@ page-mind/
 
 | 位置 | 职责与存放规则 |
 | --- | --- |
-| 根目录 | 项目入口说明、agent.md、扩展 manifest、包管理及 TypeScript/Jest 配置；构建脚本与专题报告归入下述目录。 |
+| 根目录 | 项目入口说明、AGENTS.md、扩展 manifest、包管理及 TypeScript/Jest 配置；构建脚本与专题报告归入下述目录。 |
 | `src/background/` | 后台服务和浏览器事件处理。 |
 | `src/content/` | 页面内容与选区提取。 |
 | `src/sidepanel/` | 侧栏界面、输入交互与问答逻辑；HTML、CSS 和对应功能模块就近存放。 |
@@ -55,7 +55,7 @@ page-mind/
 ### 新增与迁移约定
 
 - 优先使用现有目录；只有出现明确职责时再新增子目录，避免为单个文件建立多层结构。
-- 新增文件和目录优先使用小写 kebab-case；已有约定名称如 README.md、CHANGELOG.md 保留。
+- 新增文件和目录优先使用小写 kebab-case；已有约定名称如 AGENTS.md、README.md、CHANGELOG.md 保留。
 - 测试代码与报告分开；文档除根目录入口说明外统一放入 docs/。
 - 运行时静态资源与设计源稿分开，避免将源稿、报告或测试文件打包进扩展。
 - 移动文件时同步更新导入、npm 脚本、配置、文档链接和 README 目录树；涉及构建路径时执行构建并检查产物。
