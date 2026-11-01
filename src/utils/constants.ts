@@ -16,6 +16,7 @@ export const API_PRESETS: Record<ApiFormat, { name: string; baseUrl: string; mod
 export const STORAGE_KEYS = {
   SETTINGS: 'app_settings',
   CHAT_HISTORY: 'chat_history',
+  CHAT_SESSION_ID: 'chat_session_id',
   CONVERSATIONS: 'conversations',
   CONTEXT_SELECTION: 'contextSelection',
   ENCRYPTION_KEY: 'encryption_key',
