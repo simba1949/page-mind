@@ -76,6 +76,27 @@ describe('side panel credential storage', () => {
     expect(chromeMock.storage.local.remove).toHaveBeenCalledWith('conversations');
   });
 
+  test('restores a conversation session and rotates it when history is cleared', async () => {
+    const state: Record<string, unknown> = {};
+    chromeMock.storage.session.get.mockImplementation(async () => ({ ...state }));
+    chromeMock.storage.session.set.mockImplementation(async values => { Object.assign(state, values); });
+    chromeMock.storage.session.remove.mockImplementation(async keys => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) delete state[key];
+    });
+    const first = await StorageService.getChatSessionId();
+    expect(await StorageService.getChatSessionId()).toBe(first);
+    state.chat_history = [{ id: 'm1' }];
+    await StorageService.clearChatHistory();
+    expect(state.chat_history).toBeUndefined();
+    expect(await StorageService.getChatSessionId()).not.toBe(first);
+    expect(chromeMock.storage.local.set).not.toHaveBeenCalled();
+  });
+
+  test('replaces an invalid stored session with an opaque UUID', async () => {
+    chromeMock.storage.session.get.mockResolvedValue({ chat_session_id: 'private page title\r\nHeader: value' });
+    expect(await StorageService.getChatSessionId()).toMatch(/^[a-f0-9-]{36}$/);
+  });
+
   test('encrypts remembered API keys before persistent storage', async () => {
     await StorageService.saveSettings({ profiles: [{ id: 'p1', format: 'openai-chat', apiKey: 'secret-key', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', customModels: [], rememberApiKey: true, remark: '' }], activeProfileId: 'p1', language: 'zh', theme: 'light' });
 

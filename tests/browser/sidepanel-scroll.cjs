@@ -31,10 +31,12 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
 after(async () => { await browser?.close(); });
 
-async function fixture(viewport = { width: 400, height: 700 }, actions = 3) {
+async function fixture(viewport = { width: 400, height: 700 }, actions = 3, secure = false) {
   const page = await browser.newPage({ viewport });
-  await page.route('**/*', route => route.abort());
-  await page.setContent(html);
+  await page.route('**/*', route => secure && route.request().url() === 'https://pagemind.test/'
+    ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
+  if (secure) await page.goto('https://pagemind.test/');
+  else await page.setContent(html);
   await page.addStyleTag({ content: css });
   await page.evaluate(({ modules, actions }) => {
     const cache = {};
@@ -71,6 +73,47 @@ async function wheel(page, deltaY) {
   await page.mouse.wheel(0, deltaY);
   await page.evaluate(() => nextFrame());
 }
+
+test('OpenCode requests retain sessions after reopening and rotate on New Chat in Chromium', async () => {
+  const page = await fixture(undefined, 3, true);
+  const sessions = [];
+  await page.route('https://opencode.ai/**', async route => {
+    sessions.push(route.request().headers()['x-opencode-session']);
+    await route.fulfill({ contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({ choices: [{ message: { content: 'Test reply' } }] }) });
+  });
+  try {
+    await page.evaluate(async () => {
+      const state = {};
+      window.chrome = { storage: { session: {
+        get: async () => ({ ...state }),
+        set: async values => { Object.assign(state, values); },
+        remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete state[key]; }
+      }, local: { remove: async () => {} } }, runtime: { sendMessage: async () => ({ success: false }) } };
+      panel.saveChatHistory = async () => panelExports.StorageService.saveChatHistory(panel.messages);
+      const config = { format: 'openai-chat', model: 'test-model', apiKey: 'test-only', baseUrl: 'https://opencode.ai/zen/go/v1' };
+      const send = async () => {
+        const message = { id: crypto.randomUUID(), role: 'user', content: 'Hello', timestamp: Date.now() };
+        await panel.addMessage(message);
+        await panel.sendToAI(message);
+      };
+      await panel.loadChatHistory();
+      panel.apiService = new panelExports.APIService(config);
+      await send();
+      // Reload the stored conversation and recreate the API client, as on reopening.
+      await panel.loadChatHistory();
+      panel.apiService = new panelExports.APIService(config);
+      await send();
+      await panel.newChat();
+      await send();
+    });
+    assert.equal(sessions.length, 3);
+    assert.match(sessions[0], /^[a-f0-9-]{36}$/);
+    assert.equal(sessions[1], sessions[0]);
+    assert.notEqual(sessions[2], sessions[0]);
+    assert.equal(await page.locator('.message.assistant').count(), 1);
+  } finally { await page.close(); }
+});
 
 test('long answers leave room for chat and composer at short heights', async () => {
   const page = await fixture({ width: 360, height: 500 }, 10);

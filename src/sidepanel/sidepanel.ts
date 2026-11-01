@@ -625,9 +625,18 @@ export class StorageService {
     }
   }
 
+  static async getChatSessionId(): Promise<string> {
+    const result = await chrome.storage.session.get(STORAGE_KEYS.CHAT_SESSION_ID);
+    const stored = result[STORAGE_KEYS.CHAT_SESSION_ID];
+    if (typeof stored === 'string' && /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(stored)) return stored;
+    const sessionId = crypto.randomUUID();
+    await chrome.storage.session.set({ [STORAGE_KEYS.CHAT_SESSION_ID]: sessionId });
+    return sessionId;
+  }
+
   static async clearChatHistory(): Promise<void> {
     try {
-      await chrome.storage.session.remove(STORAGE_KEYS.CHAT_HISTORY);
+      await chrome.storage.session.remove([STORAGE_KEYS.CHAT_HISTORY, STORAGE_KEYS.CHAT_SESSION_ID]);
     } catch (error) {
       console.error('Failed to clear chat history:', error);
       throw error;
@@ -1307,6 +1316,7 @@ export function createThinkSeparator(
 // Supports OpenAI/Anthropic compatible API formats with custom endpoints
 export class APIService {
   private config: APIConfig;
+  private readonly sessionId = crypto.randomUUID();
   private static readonly REQUEST_TIMEOUT_MS = 120_000;
   private static readonly MAX_JSON_RESPONSE_BYTES = 4_000_000;
   private static readonly MAX_ERROR_RESPONSE_BYTES = 32_000;
@@ -1319,11 +1329,17 @@ export class APIService {
     };
   }
 
-  private async request(url: string, init: RequestInit): Promise<Response> {
+  private async request(url: string, init: RequestInit, sessionId?: string): Promise<Response> {
     const controller = new AbortController();
     const timeout = globalThis.setTimeout(() => controller.abort(), APIService.REQUEST_TIMEOUT_MS);
 
     try {
+      // Cover every wire format, but never send conversation IDs to other hosts.
+      if (sessionId && new URL(url).hostname === 'opencode.ai') {
+        const headers = new Headers(init.headers);
+        headers.set('x-opencode-session', sessionId);
+        init = { ...init, headers: Object.fromEntries(headers.entries()) };
+      }
       return await fetch(url, { ...init, signal: controller.signal });
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -1488,7 +1504,7 @@ export class APIService {
     return [];
   }
 
-  async chat(messages: ChatMessage[], handlers?: StreamHandlers): Promise<any> {
+  async chat(messages: ChatMessage[], handlers?: StreamHandlers, sessionId: string = this.sessionId): Promise<any> {
     if (!this.config.apiKey) {
       throw new Error('API key is required');
     }
@@ -1497,16 +1513,16 @@ export class APIService {
     const baseUrl = this.config.baseUrl || API_PRESETS[this.config.format].baseUrl;
 
     if (this.config.format === 'openai-chat') {
-      return this.chatWithOpenAI(messages, baseUrl, handlers);
+      return this.chatWithOpenAI(messages, baseUrl, handlers, sessionId);
     } else if (this.config.format === 'openai-responses') {
-      return this.chatWithOpenAIResponses(messages, baseUrl, handlers);
+      return this.chatWithOpenAIResponses(messages, baseUrl, handlers, sessionId);
     } else if (this.config.format === 'anthropic-messages') {
-      return this.chatWithAnthropic(messages, baseUrl, handlers);
+      return this.chatWithAnthropic(messages, baseUrl, handlers, sessionId);
     }
     throw new Error(`Unsupported API format: ${this.config.format}`);
   }
 
-  private async chatWithOpenAI(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers): Promise<any> {
+  private async chatWithOpenAI(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers, sessionId?: string): Promise<any> {
     const url = `${baseUrl}/chat/completions`;
 
     // Check if model is set
@@ -1537,7 +1553,7 @@ export class APIService {
         'Authorization': `Bearer ${this.config.apiKey}`
       },
       body: JSON.stringify(requestBody)
-    });
+    }, sessionId);
 
     if (!response.ok) {
       const errorText = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
@@ -1642,7 +1658,7 @@ export class APIService {
     };
   }
 
-  private async chatWithOpenAIResponses(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers): Promise<any> {
+  private async chatWithOpenAIResponses(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers, sessionId?: string): Promise<any> {
     if (!this.config.model) throw new Error('No model selected. Please select a model from the header dropdown.');
     const input = messages.filter(message => message.role !== 'system').map(message => ({
       role: message.role,
@@ -1656,7 +1672,7 @@ export class APIService {
     };
     const response = await this.request(`${baseUrl}/responses`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` }, body: JSON.stringify(body)
-    });
+    }, sessionId);
     if (!response.ok) {
       const detail = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
       throw new Error(openAICompatibleErrorMessage(response.status, detail));
@@ -1687,7 +1703,7 @@ export class APIService {
     return { content, usage: { promptTokens: usage?.input_tokens || 0, completionTokens: usage?.output_tokens || 0, totalTokens: usage?.total_tokens || 0 } };
   }
 
-  private async chatWithAnthropic(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers): Promise<any> {
+  private async chatWithAnthropic(messages: ChatMessage[], baseUrl: string, handlers?: StreamHandlers, sessionId?: string): Promise<any> {
     const url = `${baseUrl}/messages`;
 
     const systemMessage = messages.find(m => m.role === 'system');
@@ -1715,7 +1731,7 @@ export class APIService {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify(requestBody)
-    });
+    }, sessionId);
 
     if (!response.ok) {
       const errorText = await this.readCappedText(response, APIService.MAX_ERROR_RESPONSE_BYTES).catch(() => '');
@@ -2089,6 +2105,7 @@ class I18nService {
  */
 class SidePanelController {
   private messages: ChatMessage[] = [];
+  private chatSessionId: string = crypto.randomUUID();
   private apiService: APIService | null = null;
   private currentContext: PageContext | null = null;
   private contextDismissed = false;
@@ -3275,6 +3292,7 @@ class SidePanelController {
    * Load chat history from storage
    */
   private async loadChatHistory(): Promise<void> {
+    this.chatSessionId = await StorageService.getChatSessionId();
     this.messages = await StorageService.getChatHistory();
     this.renderMessages();
   }
@@ -3486,7 +3504,7 @@ class SidePanelController {
           assistantMessage.content += delta;
           this.scheduleStreamRender(contentEl, reasoningBody, assistantMessage);
         }
-      });
+      }, this.chatSessionId);
 
       this.cancelStreamRender();
       // Reconcile with the final aggregated result
@@ -3846,6 +3864,7 @@ Instructions:
       StorageService.clearChatHistory(),
       StorageService.clearConversationHistory()
     ]);
+    this.chatSessionId = await StorageService.getChatSessionId();
     this.renderMessages();
     this.currentContext = null;
     this.contextDismissed = false;

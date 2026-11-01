@@ -62,6 +62,44 @@ describe('APIService', () => {
     consoleError.mockRestore();
   });
 
+  test.each(['openai-chat', 'openai-responses', 'anthropic-messages'] as const)(
+    '%s sends the conversation session to OpenCode across service recreation', async format => {
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+      const provider = { ...config, format, baseUrl: 'https://opencode.ai/zen/go/v1' };
+      const sessionId = crypto.randomUUID();
+      await new APIService(provider).chat([], undefined, sessionId);
+      await new APIService({ ...provider, model: 'another-model' }).chat([], undefined, sessionId);
+      const nextSession = crypto.randomUUID();
+      await new APIService(provider).chat([], undefined, nextSession);
+      expect(fetchMock.mock.calls.map(([, init]) => new Headers(init.headers).get('x-opencode-session')))
+        .toEqual([sessionId, sessionId, nextSession]);
+      const headers = new Headers(fetchMock.mock.calls[0][1].headers);
+      expect(headers.get('content-type')).toBe('application/json');
+      expect(headers.get(format === 'anthropic-messages' ? 'x-api-key' : 'authorization'))
+        .toBe(format === 'anthropic-messages' ? config.apiKey : `Bearer ${config.apiKey}`);
+    }
+  );
+
+  test('standalone OpenCode clients reuse a default session without changing model discovery', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ data: [] }) });
+    const service = new APIService({ ...config, baseUrl: 'https://opencode.ai/inference/go/openai/v1' });
+    await service.fetchModels();
+    await service.chat([]);
+    await service.chat([]);
+    const headers = fetchMock.mock.calls.map(([, init]) => new Headers(init.headers));
+    expect(headers[0].has('x-opencode-session')).toBe(false);
+    expect(headers[1].get('x-opencode-session')).toMatch(/^[a-f0-9-]{36}$/);
+    expect(headers[2].get('x-opencode-session')).toBe(headers[1].get('x-opencode-session'));
+  });
+
+  test.each(['https://api.openai.com/v1', 'https://opencode.ai.evil.example/v1', 'https://proxy.example/opencode.ai/v1'])(
+    'does not disclose conversation IDs to %s', async baseUrl => {
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+      await new APIService({ ...config, baseUrl }).chat([], undefined, crypto.randomUUID());
+      expect(new Headers(fetchMock.mock.calls[0][1].headers).has('x-opencode-session')).toBe(false);
+    }
+  );
+
   test('caps oversized provider error bodies', async () => {
     fetchMock.mockResolvedValue({
       ok: false,
